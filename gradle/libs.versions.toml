@@ -1,18 +1,18 @@
 [versions]
 paperApiVersion = "1.21.4-R0.1-SNAPSHOT"
 adventureApiVersion = "4.16.0"
-typeWriterVersion = "0.7.0"
+typeWriterVersion = "0.9.0"
 lombokVersion = "1.18.30"
 placeholderapiVersion = "2.11.6"
-miniplaceholdersApiVersion = "2.2.3"
+miniplaceholdersApiVersion = "3.0.1"
 floodgateApiVersion = "2.2.3-SNAPSHOT"
 geyserApiVersion = "2.4.2-SNAPSHOT"
 commonsLangVersion = "3.14.0"
 configlibVersion = "4.6.1"
 minedownAdventureVersion = "1.7.2-SNAPSHOT"
 drinkVersion = "1.5.3"
-entityLibVersion = "+39cce79-SNAPSHOT"
-packeteventsSpigotVersion = "2.7.0"
+entityLibVersion = "3.0.3-SNAPSHOT"
+packeteventsSpigotVersion = "2.10.0-SNAPSHOT"
 universalSchedulerVersion = "0.1.6"
 viaVersionApiVersion = "5.0.1"
 libbyBukkitVersion = "2.0.0-SNAPSHOT"
@@ -20,13 +20,15 @@ bstatsBukkitVersion = "3.0.2"
 expiringMapVersion = "0.5.11"
 commonsJexl3Version = "3.4.0"
 nexoVersion = "1.2.0"
-oraxenVersion = "1.174.0"
+oraxenVersion = "1.195.0"
 itemsAdderVersion = "3.6.1"
 gsonVersion = "2.11.0"
-hmccosmeticsVersion = "2.7.4"
 creative-rp = "1.9.2-SNAPSHOT"
 creative-serializer = "1.9.2-SNAPSHOT"
 libs-disguises = "11.0.0"
+featherVersion = "0.0.5"
+labymodVersion = "1.0.6"
+hmcCosmetics = "2.8.2-fed13b8e"
 
 [libraries]
 paperApi = { module = "io.papermc.paper:paper-api", version.ref = "paperApiVersion" }
@@ -42,7 +44,7 @@ configlib = { module = "de.exlll:configlib-yaml", version.ref = "configlibVersio
 configlibPaper = { module = "de.exlll:configlib-paper", version.ref = "configlibVersion" }
 minedownAdventure = { module = "de.themoep:minedown-adventure", version.ref = "minedownAdventureVersion" }
 drink = { module = "com.github.alexdev03:drink", version.ref = "drinkVersion" }
-entityLib = { module = "me.tofaa.entitylib:spigot", version.ref = "entityLibVersion" }
+entityLib = { module = "io.github.tofaa2:spigot", version.ref = "entityLibVersion" }
 packeteventsSpigot = { module = "com.github.retrooper:packetevents-spigot", version.ref = "packeteventsSpigotVersion" }
 universalScheduler = { module = "com.github.Anon8281:UniversalScheduler", version.ref = "universalSchedulerVersion" }
 viaVersionApi = { module = "com.viaversion:viaversion-api", version.ref = "viaVersionApiVersion" }
@@ -54,7 +56,9 @@ nexo = { module = "com.nexomc:nexo", version.ref = "nexoVersion" }
 oraxen = { module = "io.th0rgal:oraxen", version.ref = "oraxenVersion" }
 itemsAdder = { module = "com.github.LoneDev6:API-ItemsAdder", version.ref = "itemsAdderVersion" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gsonVersion" }
-hmccosmetics = { module = "com.hibiscusmc:HMCCosmetics", version.ref = "hmccosmeticsVersion" }
 creative-rp = { module = "team.unnamed:creative-api", version.ref = "creative-rp" }
 creative-serializer = { module = "team.unnamed:creative-serializer-minecraft", version.ref = "creative-serializer" }
 libs-disguises = { module = "me.libraryaddict.disguises:libsdisguises", version.ref = "libs-disguises" }
+feather = { module = "net.digitalingot.feather-server-api:api", version.ref = "featherVersion" }
+labymod = { module = "net.labymod.serverapi:server-bukkit", version.ref = "labymodVersion" }
+hmcCosmetics = { module = "com.hibiscusmc:HMCCosmetics", version.ref = "hmcCosmetics" }

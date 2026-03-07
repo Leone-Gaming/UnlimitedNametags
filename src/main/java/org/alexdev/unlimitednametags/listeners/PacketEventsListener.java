@@ -6,8 +6,10 @@ import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.player.ClientVersion;
 import com.github.retrooper.packetevents.util.Vector3f;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientEntityAction;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerInput;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCamera;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
@@ -15,14 +17,12 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTe
 import com.google.common.collect.Maps;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.data.TeamData;
-import org.alexdev.unlimitednametags.hook.ViaVersionHook;
 import org.alexdev.unlimitednametags.packet.PacketNameTag;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class PacketEventsListener extends PacketListenerAbstract {
 
@@ -76,6 +76,8 @@ public class PacketEventsListener extends PacketListenerAbstract {
     public void onPacketReceive(@NotNull PacketReceiveEvent event) {
         if (event.getPacketType() == PacketType.Play.Client.ENTITY_ACTION) {
             handleUseEntity(event);
+        } else if (event.getPacketType() == PacketType.Play.Client.PLAYER_INPUT) {
+            handlePlayerInput(event);
         }
     }
 
@@ -89,10 +91,28 @@ public class PacketEventsListener extends PacketListenerAbstract {
         if (player.isEmpty()) {
             return;
         }
+
+
         switch (packet.getAction()) {
             case START_SNEAKING -> plugin.getNametagManager().updateSneaking(player.get(), true);
             case STOP_SNEAKING -> plugin.getNametagManager().updateSneaking(player.get(), false);
             case START_FLYING_WITH_ELYTRA -> plugin.getPlayerListener().logicElytra(player.get());
+        }
+    }
+
+    private void handlePlayerInput(PacketReceiveEvent event) {
+        if (!(event.getPlayer() instanceof Player player)) {
+            return;
+        }
+
+        final WrapperPlayClientPlayerInput packet = new WrapperPlayClientPlayerInput(event);
+        final Optional<PacketNameTag> optionalPacketDisplayText = plugin.getNametagManager().getPacketDisplayText(player);
+        if (optionalPacketDisplayText.isEmpty()) {
+            return;
+        }
+
+        if (packet.isShift() != optionalPacketDisplayText.get().isSneaking()) {
+            plugin.getNametagManager().updateSneaking(player, packet.isShift());
         }
     }
 
@@ -103,18 +123,31 @@ public class PacketEventsListener extends PacketListenerAbstract {
             return;
         }
 
+        final List<Integer> passengers = collectPassengers(packet.getPassengers());
         final Optional<PacketNameTag> optionalPacketDisplayText = plugin.getNametagManager().getPacketDisplayText(player.get());
         if (optionalPacketDisplayText.isEmpty()) {
+            plugin.getPacketManager().setPassengers(player.get(), passengers);
             return;
         }
 
-        final List<Integer> passengers = Arrays.stream(packet.getPassengers()).boxed().collect(Collectors.toList());
-
-        plugin.getPacketManager().setPassengers(player.get(), passengers);
         if(!passengers.contains(optionalPacketDisplayText.get().getEntityId())) {
             passengers.add(optionalPacketDisplayText.get().getEntityId());
+            passengers.sort(Comparator.naturalOrder());
             packet.setPassengers(passengers.stream().mapToInt(i -> i).toArray());
+            event.markForReEncode(true);
         }
+
+        plugin.getPacketManager().setPassengers(player.get(), passengers);
+    }
+
+    @NotNull
+    private List<Integer> collectPassengers(int[] passengers) {
+        final  List<Integer> passengerList = new ArrayList<>(passengers.length);
+        for (int passenger : passengers) {
+            passengerList.add(passenger);
+        }
+
+        return passengerList;
     }
 
     private boolean preTeamsChecks(@NotNull PacketSendEvent event) {
@@ -122,12 +155,7 @@ public class PacketEventsListener extends PacketListenerAbstract {
             return false;
         }
 
-        final Player player = Bukkit.getPlayer(event.getUser().getUUID());
-        if (player == null) {
-            return false;
-        }
-
-        return !plugin.getHook(ViaVersionHook.class).map(h -> h.hasNotTextDisplays(player)).orElse(false);
+        return event.getUser().getClientVersion().isNewerThan(ClientVersion.V_1_19_3);
     }
 
     private void handleTeams(@NotNull PacketSendEvent event) {
@@ -163,7 +191,6 @@ public class PacketEventsListener extends PacketListenerAbstract {
         return false;
     }
 
-
     private void handleAddEntities(@NotNull PacketSendEvent event, @NotNull WrapperPlayServerTeams packet,
                                    @NotNull Map<String, TeamData> teams, @NotNull String teamName) {
         final Optional<TeamData> teamDataOpt = Optional.ofNullable(teams.get(teamName));
@@ -174,7 +201,7 @@ public class PacketEventsListener extends PacketListenerAbstract {
         final TeamData teamData = teamDataOpt.get();
         teamData.getMembers().addAll(packet.getPlayers());
 
-        if (!teamData.isChangedVisibility() && packet.getPlayers().stream().anyMatch(p -> Bukkit.getPlayer(p) != null)) {
+        if (!teamData.isChangedVisibility() && packet.getPlayers().stream().anyMatch(this::existsPlayer)) {
             teamData.setChangedVisibility(true);
             final WrapperPlayServerTeams.ScoreBoardTeamInfo teamInfo = teamData.getTeamInfo();
             teamInfo.setTagVisibility(WrapperPlayServerTeams.NameTagVisibility.NEVER);
@@ -199,7 +226,7 @@ public class PacketEventsListener extends PacketListenerAbstract {
             final TeamData teamData = new TeamData(teamName, teamInfo, Set.copyOf(packet.getPlayers()));
             teams.put(teamName, teamData);
 
-            if (teamData.getMembers().stream().anyMatch(p -> Bukkit.getPlayer(p) != null)) {
+            if (teamData.getMembers().stream().anyMatch(this::existsPlayer)) {
                 teamData.setChangedVisibility(true);
                 // Ensure teamInfo is not null before setting visibility
                 if (teamData.getTeamInfo() != null) {
@@ -230,6 +257,7 @@ public class PacketEventsListener extends PacketListenerAbstract {
         teams.remove(player.getUniqueId());
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void handleMetaData(@NotNull PacketSendEvent event) {
         if (!(event.getPlayer() instanceof Player)) {
             return;
@@ -255,6 +283,11 @@ public class PacketEventsListener extends PacketListenerAbstract {
                 return;
             }
         }
+    }
+
+    public boolean existsPlayer(@NotNull String name) {
+//        return plugin.getPlayerListener().getPlayerNameId().containsKey(name);
+        return Bukkit.getPlayer(name) != null;
     }
 
     public void onDisable() {

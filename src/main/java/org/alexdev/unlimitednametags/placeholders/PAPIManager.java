@@ -1,7 +1,6 @@
 package org.alexdev.unlimitednametags.placeholders;
 
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import me.clip.placeholderapi.PlaceholderAPI;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.bukkit.entity.Player;
@@ -15,14 +14,22 @@ public class PAPIManager {
 
     private final UnlimitedNameTags plugin;
     @Getter
-    private final boolean papiEnabled;
+    private boolean papiEnabled;
     private UntPapiExpansion untPapiExpansion;
 
     private static final long LOG_INTERVAL_MS = 500L;
     private final AtomicLong lastErrorLog = new AtomicLong(0);
 
-    public PAPIManager(UnlimitedNameTags plugin) {
+    public PAPIManager(@NotNull UnlimitedNameTags plugin) {
         this.plugin = plugin;
+        this.checkPapiEnabled();
+    }
+
+    public void checkPapiEnabled() {
+        if (papiEnabled) {
+            return;
+        }
+
         this.papiEnabled = plugin.getServer().getPluginManager().isPluginEnabled("PlaceholderAPI");
         if (papiEnabled) {
             try {

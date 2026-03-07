@@ -4,37 +4,50 @@ import com.hibiscusmc.hmccosmetics.api.HMCCosmeticsAPI;
 import com.hibiscusmc.hmccosmetics.cosmetic.Cosmetic;
 import com.hibiscusmc.hmccosmetics.cosmetic.CosmeticSlot;
 import com.hibiscusmc.hmccosmetics.user.CosmeticUser;
-import lombok.Getter;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.hook.creative.CreativeHook;
 import org.alexdev.unlimitednametags.hook.hat.HatHook;
 import org.bukkit.entity.Player;
-import org.bukkit.event.Listener;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 
-@Getter
-public class HMCCosmeticsHook extends Hook implements Listener, HatHook {
+public class HMCCosmeticsHook extends Hook implements HatHook {
 
     private CreativeHook creativeHook;
-    private boolean enabled = false;
 
-    public HMCCosmeticsHook(@NotNull UnlimitedNameTags plugin) {
+    public HMCCosmeticsHook(UnlimitedNameTags plugin) {
         super(plugin);
-        loadCreativeHook();
     }
 
+    @Override
+    public void onEnable() {
+        plugin.getTaskScheduler().runTaskLater(() -> {
+            creativeHook = plugin.getHooks().values()
+                    .stream()
+                    .filter(hook -> hook instanceof CreativeHook)
+                    .map(hook -> (CreativeHook) hook)
+                    .findFirst()
+                    .orElse(null);
+        }, 1);
+    }
+
+    @Override
+    public void onDisable() {
+    }
+
+    public boolean hasBackpack(@NotNull Player player) {
+        final CosmeticUser user = HMCCosmeticsAPI.getUser(player.getUniqueId());
+        return user != null && user.hasCosmeticInSlot(CosmeticSlot.BACKPACK);
+    }
+
+    @Override
     public double getHigh(@NotNull Player player) {
-        if (!enabled) {
+        final CosmeticUser user = HMCCosmeticsAPI.getUser(player.getUniqueId());
+        if (user == null) {
             return 0;
         }
 
-        final CosmeticUser cosmeticUser = HMCCosmeticsAPI.getUser(player.getUniqueId());
-        if (cosmeticUser == null) {
-            return 0;
-        }
-
-        final Cosmetic cosmetic = cosmeticUser.getCosmetic(CosmeticSlot.HELMET);
+        final Cosmetic cosmetic = user.getCosmetic(CosmeticSlot.HELMET);
         if (cosmetic == null) {
             return 0;
         }
@@ -44,31 +57,10 @@ public class HMCCosmeticsHook extends Hook implements Listener, HatHook {
             return 0;
         }
 
-        return creativeHook.getHigh(item);
-    }
-
-    private void loadCreativeHook() {
-        this.creativeHook = plugin.getHooks().values().stream()
-                .filter(h -> h instanceof CreativeHook)
-                .map(h -> (CreativeHook) h)
-                .findFirst()
-                .orElse(null);
-
-        if (creativeHook == null) {
-            plugin.getLogger().warning("CreativeHook not found, cannot support HMCCosmetics");
-            return;
+        if (creativeHook != null) {
+            return creativeHook.getHigh(item);
         }
 
-        enabled = true;
+        return 0;
     }
-
-    @Override
-    public void onEnable() {
-        plugin.getServer().getPluginManager().registerEvents(this, plugin);
-    }
-
-    @Override
-    public void onDisable() {
-    }
-
 }
