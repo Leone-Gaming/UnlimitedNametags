@@ -34,12 +34,19 @@ import java.util.stream.Collectors;
 @Getter
 public class NameTagManager {
 
+    private static final class ViewerSnapshot {
+        private volatile int hash = 0;
+        private volatile long lastSentAtMs = 0L;
+    }
+
     private static final class NameTagEntry {
         private final List<PacketNameTag> displays;
+        private final Map<UUID, ViewerSnapshot> viewerSnapshots;
 
         private NameTagEntry(@NotNull PacketNameTag initial) {
             this.displays = new java.util.concurrent.CopyOnWriteArrayList<>();
             this.displays.add(initial);
+            this.viewerSnapshots = Maps.newConcurrentMap();
         }
 
         @NotNull
@@ -100,12 +107,18 @@ public class NameTagManager {
                 10, plugin.getConfigManager().getSettings().getTaskInterval());
 
         // Refresh passengers
-        final MyScheduledTask passengers = plugin.getTaskScheduler().runTaskTimerAsynchronously(() -> nameTags.values()
-                .stream()
-                .map(entry -> entry.primary().getOwner())
-                .filter(p -> plugin.getHook(HMCCosmeticsHook.class).map(h -> !h.hasBackpack(p)).orElse(true))
-                .forEach(player -> getPacketDisplayText(player).ifPresent(PacketNameTag::sendPassengerPacketToViewers)),
-                20, 20 * 5L);
+        final int unchangedResendSeconds = plugin.getConfigManager().getSettings().getUnchangedResendIntervalSeconds();
+        final long passengerPeriodTicks = unchangedResendSeconds > 0 ? unchangedResendSeconds * 20L : 20 * 5L;
+        final MyScheduledTask passengers = plugin.getTaskScheduler().runTaskTimerAsynchronously(() -> {
+            // In PER_LINE_ENTITIES, passenger packets are sent per-viewer only when needed (or on periodic resends).
+            if (isPerLineEntitiesMode()) {
+                return;
+            }
+            nameTags.values().stream()
+                    .map(entry -> entry.primary().getOwner())
+                    .filter(p -> plugin.getHook(HMCCosmeticsHook.class).map(h -> !h.hasBackpack(p)).orElse(true))
+                    .forEach(owner -> getPacketDisplayText(owner).ifPresent(PacketNameTag::sendPassengerPacketToViewers));
+        }, 20, passengerPeriodTicks);
 
         // Scale task
         if (isScalePresent()) {
@@ -431,47 +444,75 @@ public class NameTagManager {
 
     private void editDisplay(@NotNull Player player, Map<Player, Component> components,
             @NotNull Settings.NameTag nameTag, boolean force) {
-        getPacketDisplayText(player).ifPresent(packetNameTag -> {
-            if (!packetNameTag.getNameTag().equals(nameTag)) {
-                packetNameTag.setNameTag(nameTag);
+        final NameTagEntry entry = nameTags.get(player.getUniqueId());
+        if (entry == null) {
+            return;
+        }
+
+        final PacketNameTag packetNameTag = entry.primary();
+        if (!packetNameTag.getNameTag().equals(nameTag)) {
+            packetNameTag.setNameTag(nameTag);
+        }
+        if (force && isScalePresent()) {
+            packetNameTag.checkScale();
+        }
+
+        final Settings settings = plugin.getConfigManager().getSettings();
+        final int unchangedResendSeconds = settings.getUnchangedResendIntervalSeconds();
+        final long now = System.currentTimeMillis();
+
+        final boolean shadowed = nameTag.background().shadowed();
+        final boolean seeThrough = nameTag.background().seeThrough() && !packetNameTag.isSneaking();
+        final int backgroundColor = nameTag.background().getColor().asARGB();
+
+        components.forEach((viewer, component) -> {
+            final User user = PacketEvents.getAPI().getPlayerManager().getUser(viewer);
+            if (user == null) {
+                return;
             }
-            if (force && isScalePresent()) {
-                packetNameTag.checkScale();
+
+            final int newHash = computeSingleEntityHash(settings, nameTag, packetNameTag, shadowed, seeThrough,
+                    backgroundColor, component);
+            final ViewerSnapshot snapshot = entry.viewerSnapshots.computeIfAbsent(viewer.getUniqueId(),
+                    u -> new ViewerSnapshot());
+            final boolean duePeriodicResend = unchangedResendSeconds > 0
+                    && now - snapshot.lastSentAtMs >= unchangedResendSeconds * 1000L;
+
+            if (!force && snapshot.hash == newHash && !duePeriodicResend) {
+                return;
             }
 
-            final boolean shadowed = nameTag.background().shadowed();
-            final boolean seeThrough = nameTag.background().seeThrough() && !packetNameTag.isSneaking();
-            final int backgroundColor = nameTag.background().getColor().asARGB();
+            if (!packetNameTag.canPlayerSee(viewer)) {
+                packetNameTag.showToPlayer(viewer);
+            }
 
-            components.forEach((p, c) -> {
-                final boolean[] updateRef = { packetNameTag.text(p, c) || force };
-                final User user = PacketEvents.getAPI().getPlayerManager().getUser(p);
-                if (user == null) {
-                    return;
-                }
-                packetNameTag.modify(user, m -> {
-
-                    if (force) {
+            final boolean[] updateRef = { packetNameTag.text(viewer, component) || force };
+            packetNameTag.modify(user, m -> {
+                if (force) {
+                    m.setShadow(shadowed);
+                    m.setSeeThrough(seeThrough);
+                    m.setBackgroundColor(backgroundColor);
+                } else {
+                    if (m.isShadow() != shadowed) {
                         m.setShadow(shadowed);
-                        m.setSeeThrough(seeThrough);
-                        m.setBackgroundColor(backgroundColor);
-                    } else {
-                        if (m.isShadow() != shadowed) {
-                            m.setShadow(shadowed);
-                            updateRef[0] = true;
-                        }
-                        if (m.isSeeThrough() != seeThrough) {
-                            m.setSeeThrough(seeThrough);
-                            updateRef[0] = true;
-                        }
+                        updateRef[0] = true;
                     }
-
-                });
-
-                if (updateRef[0]) {
-                    packetNameTag.refreshForPlayer(p);
+                    if (m.isSeeThrough() != seeThrough) {
+                        m.setSeeThrough(seeThrough);
+                        updateRef[0] = true;
+                    }
                 }
             });
+
+            if (updateRef[0] || duePeriodicResend) {
+                packetNameTag.refreshForPlayer(viewer);
+            }
+            if (duePeriodicResend) {
+                packetNameTag.sendPassengersPacket(user);
+            }
+
+            snapshot.hash = newHash;
+            snapshot.lastSentAtMs = now;
         });
     }
 
@@ -505,6 +546,10 @@ public class NameTagManager {
 
         // Update per-viewer text (and show/hide line entities depending on the viewer's line count).
         components.forEach((viewer, viewerLines) -> {
+            final Settings settings = plugin.getConfigManager().getSettings();
+            final int unchangedResendSeconds = settings.getUnchangedResendIntervalSeconds();
+            final long now = System.currentTimeMillis();
+
             final User user = PacketEvents.getAPI().getPlayerManager().getUser(viewer);
             if (user == null) {
                 return;
@@ -514,7 +559,19 @@ public class NameTagManager {
             final int slotCount = entry.all().size();
             final int slotStart = Math.max(0, slotCount - viewerLineCount); // bottom-align viewer lines into the stack
             final float spacing = spacingBase * entry.primary().getScale();
-            boolean anyNewlyShown = false;
+
+            final int newHash = computePerLineHash(settings, nameTag, entry.primary(), shadowed, backgroundColor,
+                    baseYOffset, spacingBase, slotCount, viewerLines);
+            final ViewerSnapshot snapshot = entry.viewerSnapshots.computeIfAbsent(viewer.getUniqueId(),
+                    u -> new ViewerSnapshot());
+            final boolean duePeriodicResend = unchangedResendSeconds > 0
+                    && now - snapshot.lastSentAtMs >= unchangedResendSeconds * 1000L;
+
+            if (!force && snapshot.hash == newHash && !duePeriodicResend) {
+                return;
+            }
+
+            boolean passengersChanged = false;
 
             for (int slot = 0; slot < slotCount; slot++) {
                 final PacketNameTag lineDisplay = entry.all().get(slot);
@@ -531,6 +588,7 @@ public class NameTagManager {
                 if (!shouldShowLine) {
                     if (lineDisplay.canPlayerSee(viewer)) {
                         lineDisplay.hideFromPlayer(viewer);
+                        passengersChanged = true;
                     }
                     continue;
                 }
@@ -541,7 +599,7 @@ public class NameTagManager {
                     // The viewer entity might be created after updateLineOffsets() ran, so re-apply the offset.
                     final float expectedOffset = baseYOffset + ((slotCount - 1 - slot) * spacing);
                     lineDisplay.resetOffset(expectedOffset);
-                    anyNewlyShown = true;
+                    passengersChanged = true;
                 }
 
                 final Component lineComponent = viewerLines.get(lineIndex);
@@ -568,53 +626,57 @@ public class NameTagManager {
                     m.setTextOpacity((byte) (lineDisplay.isSneaking()
                             ? plugin.getConfigManager().getSettings().getSneakOpacity()
                             : -1));
-                    updateRef[0] = true;
                 });
 
-                if (updateRef[0]) {
+                if (updateRef[0] || duePeriodicResend) {
                     lineDisplay.refreshForPlayer(viewer);
                 }
             }
 
-            // Keep the passenger list accurate for this viewer (important when the line count changes).
-            entry.primary().sendPassengersPacket(user);
-
-            if (anyNewlyShown) {
-                final List<Component> viewerLinesSnapshot = List.copyOf(viewerLines);
-                final int slotCountSnapshot = slotCount;
-                final int slotStartSnapshot = slotStart;
-                plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
-                    final Player currentViewer = plugin.getPlayerListener().getPlayer(viewer.getUniqueId());
-                    if (currentViewer == null) {
-                        return;
-                    }
-                    final User currentUser = PacketEvents.getAPI().getPlayerManager().getUser(currentViewer);
-                    if (currentUser == null) {
-                        return;
-                    }
-                    final NameTagEntry currentEntry = nameTags.get(player.getUniqueId());
-                    if (currentEntry == null) {
-                        return;
-                    }
-
-                    for (int slot = 0; slot < slotCountSnapshot; slot++) {
-                        final int lineIndex = slot - slotStartSnapshot;
-                        final boolean shouldShowLine = lineIndex >= 0 && lineIndex < viewerLinesSnapshot.size();
-                        final PacketNameTag display = currentEntry.all().get(slot);
-                        if (!shouldShowLine) {
-                            continue;
-                        }
-                        display.text(currentViewer, viewerLinesSnapshot.get(lineIndex));
-                        display.modify(currentUser, m -> m.setTextOpacity((byte) (display.isSneaking()
-                                ? plugin.getConfigManager().getSettings().getSneakOpacity()
-                                : -1)));
-                        display.refreshForPlayer(currentViewer);
-                    }
-
-                    currentEntry.primary().sendPassengersPacket(currentUser);
-                }, 1);
+            if (passengersChanged || duePeriodicResend) {
+                // Keep the passenger list accurate for this viewer (important when the line count changes).
+                entry.primary().sendPassengersPacket(user);
             }
+
+            snapshot.hash = newHash;
+            snapshot.lastSentAtMs = now;
         });
+    }
+
+    private int computeSingleEntityHash(@NotNull Settings settings, @NotNull Settings.NameTag nameTag,
+            @NotNull PacketNameTag primary, boolean shadowed, boolean seeThrough, int backgroundColor,
+            @NotNull Component text) {
+        int result = 1;
+        result = 31 * result + (nameTag.permission() == null ? 0 : nameTag.permission().hashCode());
+        result = 31 * result + Boolean.hashCode(shadowed);
+        result = 31 * result + Boolean.hashCode(seeThrough);
+        result = 31 * result + backgroundColor;
+        result = 31 * result + Float.floatToIntBits(settings.getYOffset());
+        result = 31 * result + Float.floatToIntBits(settings.getViewDistance());
+        result = 31 * result + settings.getDefaultBillboard().ordinal();
+        result = 31 * result + Float.floatToIntBits(primary.getScale());
+        result = 31 * result + (text == null ? 0 : text.hashCode());
+        return result;
+    }
+
+    private int computePerLineHash(@NotNull Settings settings, @NotNull Settings.NameTag nameTag,
+            @NotNull PacketNameTag primary, boolean shadowed, int backgroundColor,
+            float baseYOffset, float spacingBase, int slotCount, @NotNull List<Component> lines) {
+        int result = 1;
+        result = 31 * result + (nameTag.permission() == null ? 0 : nameTag.permission().hashCode());
+        result = 31 * result + Boolean.hashCode(shadowed);
+        result = 31 * result + backgroundColor;
+        result = 31 * result + Float.floatToIntBits(baseYOffset);
+        result = 31 * result + Float.floatToIntBits(spacingBase);
+        result = 31 * result + Float.floatToIntBits(settings.getViewDistance());
+        result = 31 * result + settings.getDefaultBillboard().ordinal();
+        result = 31 * result + Float.floatToIntBits(primary.getScale());
+        result = 31 * result + slotCount;
+        result = 31 * result + lines.size();
+        for (Component line : lines) {
+            result = 31 * result + (line == null ? 0 : line.hashCode());
+        }
+        return result;
     }
 
     private void loadDisplay(@NotNull Player player, @NotNull Component component,
@@ -754,8 +816,10 @@ public class NameTagManager {
             });
         }
 
-        nameTags.forEach((uuid, display) -> {
-            display.all().forEach(tag -> {
+        final UUID quittingUuid = player.getUniqueId();
+        nameTags.forEach((uuid, otherEntry) -> {
+            otherEntry.viewerSnapshots.remove(quittingUuid);
+            otherEntry.all().forEach(tag -> {
                 tag.handleQuit(player);
                 tag.getBlocked().remove(player.getUniqueId());
             });
@@ -765,6 +829,7 @@ public class NameTagManager {
     public void removeAllViewers(@NotNull Player player) {
         final NameTagEntry entry = nameTags.get(player.getUniqueId());
         if (entry != null) {
+            entry.viewerSnapshots.clear();
             entry.all().forEach(tag -> {
                 tag.setVisible(false);
                 tag.clearViewers();
@@ -801,6 +866,7 @@ public class NameTagManager {
                 tag.hideFromPlayer(player);
                 tag.getBlocked().add(player.getUniqueId());
             });
+            display.viewerSnapshots.remove(player.getUniqueId());
         });
         getPacketDisplayTexts(player).forEach(PacketNameTag::clearViewers);
     }
@@ -984,6 +1050,10 @@ public class NameTagManager {
     public void removeDisplay(@NotNull Player player, @NotNull Player target) {
         if (player == target && !plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
             return;
+        }
+        final NameTagEntry entry = nameTags.get(target.getUniqueId());
+        if (entry != null) {
+            entry.viewerSnapshots.remove(player.getUniqueId());
         }
         getPacketDisplayTexts(target).forEach(packetNameTag -> packetNameTag.hideFromPlayer(player));
     }

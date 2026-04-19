@@ -69,7 +69,17 @@ public class Settings {
         return Optional.ofNullable(nameTags.get("default"));
     }
 
+    @Comment("""
+            How often to run the async nametag refresh task (in ticks).
+            Lower values update placeholders more often, but (with diff-based updates) packets are only sent when
+            something actually changes.""")
     private int taskInterval = 20;
+
+    @Comment("""
+            If a viewer's nametag content is unchanged, resend it at most once per this many seconds.
+            This reduces bandwidth while still periodically re-syncing clients (helps recover from missed packets).
+            Set to 0 to disable periodic resends.""")
+    private int unchangedResendIntervalSeconds = 15;
 
     @Comment(value = {"This is opacity that will be applied to the nametag when a player sneaks. So, the value is from -128 to 127. ",
             "Similar to the background, the text rendering is discarded when it is less than 26. Defaults to -1, which represents 255 and is completely opaque."})

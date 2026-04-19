@@ -1,6 +1,7 @@
 package org.alexdev.unlimitednametags.placeholders;
 
 import lombok.Getter;
+import lombok.RequiredArgsConstructor;
 import me.clip.placeholderapi.PlaceholderAPI;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.bukkit.entity.Player;
@@ -9,7 +10,6 @@ import org.jetbrains.annotations.NotNull;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
-@RequiredArgsConstructor
 public class PAPIManager {
 
     private final UnlimitedNameTags plugin;
