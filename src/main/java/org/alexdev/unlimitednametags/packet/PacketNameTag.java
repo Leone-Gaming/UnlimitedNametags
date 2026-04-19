@@ -41,6 +41,10 @@ public class PacketNameTag {
     private final UUID entityIdUuid;
     private final Player owner;
     private final Set<UUID> blocked;
+    // Tracks actual viewers (players the entity is spawned for). WrapperPerPlayerEntity#getEntities()
+    // includes players we may have written metadata for (EntityLib creates per-player wrappers lazily),
+    // so it must not be used to infer visibility.
+    private final Set<UUID> viewers;
     @NotNull
     private final Map<UUID, Component> relationalCache;
     private final Map<UUID, Component> calculatedTextCache = Maps.newConcurrentMap();
@@ -66,6 +70,7 @@ public class PacketNameTag {
         this.entityIdUuid = UUID.randomUUID();
         this.perPlayerEntity = new WrapperPerPlayerEntity(this.getBaseSupplier());
         this.blocked = Sets.newConcurrentHashSet();
+        this.viewers = Sets.newConcurrentHashSet();
         this.lastUpdate = System.currentTimeMillis();
         this.nameTag = nameTag;
         this.scale = plugin.getNametagManager().getScale(owner);
@@ -255,10 +260,21 @@ public class PacketNameTag {
             return;
         }
 
-        if (!player.getUniqueId().equals(owner.getUniqueId())) {
-            WrapperEntity entity = perPlayerEntity.getEntityOf(getUser(player));
-            if (entity != null) {
-                applyOwnerData(entity);
+        final User viewerUser = getUser(player);
+        if (viewerUser == null) {
+            return;
+        }
+
+        viewers.add(player.getUniqueId());
+
+        // Ensure the viewer-specific entity exists and the viewer is registered before spawning.
+        // Some EntityLib implementations only send spawn packets to current viewers.
+        perPlayerEntity.addViewer(viewerUser);
+
+        if (!isOwner(player)) {
+            final WrapperEntity viewerEntity = perPlayerEntity.getEntityOf(viewerUser);
+            if (viewerEntity != null) {
+                applyOwnerData(viewerEntity);
             }
         }
 
@@ -270,17 +286,10 @@ public class PacketNameTag {
             setPosition();
         }
 
-        perPlayerEntity.addViewer(getUser(player));
-
         updateViewer(player.getUniqueId());
 
         plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
-            final User user = getUser(player);
-            if (user == null) {
-                return;
-            }
-
-            sendPassengersPacket(user);
+            sendPassengersPacket(viewerUser);
         }, 1);
     }
 
@@ -363,10 +372,10 @@ public class PacketNameTag {
             return true;
         }
 
-        if (plugin.getNametagManager().isDebug() && !getViewers().contains(player.getUniqueId())) {
+        if (plugin.getNametagManager().isDebug() && !viewers.contains(player.getUniqueId())) {
             plugin.getLogger().info("Player " + player.getName() + " is eligible to see nametag of " + owner.getName());
         }
-        return !getViewers().contains(player.getUniqueId());
+        return !viewers.contains(player.getUniqueId());
     }
 
     private boolean isPlayerChannelNotValid(@NotNull Player player) {
@@ -415,6 +424,17 @@ public class PacketNameTag {
         if (removed) {
             return;
         }
+
+        if (plugin.getConfigManager().getSettings().getTextDisplayMode() == Settings.TextDisplayMode.PER_LINE_ENTITIES) {
+            final Player viewer = plugin.getPlayerListener().getPlayer(player.getUUID());
+            final Collection<Integer> visibleLineIds = plugin.getNametagManager().getPacketDisplayTexts(owner).stream()
+                    .filter(tag -> viewer == null || tag.canPlayerSee(viewer))
+                    .map(PacketNameTag::getEntityId)
+                    .toList();
+            plugin.getPacketManager().sendPassengersPacket(player, owner, visibleLineIds);
+            return;
+        }
+
         plugin.getPacketManager().sendPassengersPacket(player, this);
     }
 
@@ -454,9 +474,7 @@ public class PacketNameTag {
     }
 
     public void hideFromPlayer(@NotNull Player player) {
-        if (blocked.contains(player.getUniqueId())) {
-            return;
-        }
+        viewers.remove(player.getUniqueId());
         final User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
         if (user == null) {
             perPlayerEntity.getEntities().remove(player.getUniqueId());
@@ -472,8 +490,6 @@ public class PacketNameTag {
         }
         relationalCache.remove(player.getUniqueId());
         calculatedTextCache.remove(player.getUniqueId());
-
-        plugin.getPacketManager().removePassenger(player, entityId);
     }
 
     public void clearViewers() {
@@ -491,16 +507,14 @@ public class PacketNameTag {
     }
 
     public void hideFromPlayerSilently(@NotNull Player player) {
-        if (blocked.contains(player.getUniqueId())) {
-            return;
-        }
+        viewers.remove(player.getUniqueId());
         perPlayerEntity.getEntities().remove(player.getUniqueId());
         relationalCache.remove(player.getUniqueId());
         calculatedTextCache.remove(player.getUniqueId());
     }
 
     public boolean canPlayerSee(@NotNull Player player) {
-        return getViewers().contains(player.getUniqueId());
+        return viewers.contains(player.getUniqueId());
     }
 
     public void spawn(@NotNull Player player) {
@@ -541,6 +555,7 @@ public class PacketNameTag {
 
     public void remove() {
         removed = true;
+        viewers.clear();
         perPlayerEntity.getEntities().keySet().forEach(u -> {
             final Player player = plugin.getPlayerListener().getPlayer(u);
             if (player == null) {
@@ -563,8 +578,8 @@ public class PacketNameTag {
     }
 
     public void handleQuit(@NotNull Player player) {
+        viewers.remove(player.getUniqueId());
         perPlayerEntity.getEntities().remove(player.getUniqueId());
-        plugin.getPacketManager().removePassenger(player, entityId);
     }
 
     public void setTextOpacity(byte b) {
@@ -583,12 +598,19 @@ public class PacketNameTag {
 
     private void applyOwnerData(@NotNull WrapperEntity wrapper) {
         final User ownerUser = PacketEvents.getAPI().getPlayerManager().getUser(owner);
+        if (ownerUser == null) {
+            return;
+        }
+        final WrapperEntity ownerEntity = perPlayerEntity.getEntityOf(ownerUser);
+        if (ownerEntity == null) {
+            return;
+        }
         final Metadata metadata = wrapper.getEntityMeta().getMetadata();
         final Optional<EntityData<?>> component = wrapper.getEntityMeta().entityData()
                 .stream()
                 .filter(e -> e.getType() == EntityDataTypes.ADV_COMPONENT)
                 .findFirst();
-        final Metadata ownerMetadata = perPlayerEntity.getEntityOf(ownerUser).getEntityMeta().getMetadata();
+        final Metadata ownerMetadata = ownerEntity.getEntityMeta().getMetadata();
         metadata.copyFrom(ownerMetadata);
         component.ifPresent(
                 entityData -> ((TextDisplayMeta) wrapper.getEntityMeta()).setText((Component) entityData.getValue()));
@@ -665,6 +687,6 @@ public class PacketNameTag {
      * @return the viewers of the nametag
      */
     public Set<UUID> getViewers() {
-        return Collections.unmodifiableSet(perPlayerEntity.getEntities().keySet());
+        return Collections.unmodifiableSet(viewers);
     }
 }

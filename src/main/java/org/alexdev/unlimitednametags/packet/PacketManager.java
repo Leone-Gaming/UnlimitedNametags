@@ -54,17 +54,20 @@ public class PacketManager {
     }
 
     public void sendPassengersPacket(@NotNull User player, @NotNull PacketNameTag packetNameTag) {
-        final int entityId = packetNameTag.getEntityId();
-        final int ownerId = packetNameTag.getOwner().getEntityId();
+        sendPassengersPacket(player, packetNameTag.getOwner(), List.of(packetNameTag.getEntityId()));
+    }
+
+    public void sendPassengersPacket(@NotNull User player, @NotNull Player owner, @NotNull Collection<Integer> extraPassengers) {
+        final int ownerId = owner.getEntityId();
         executorService.submit(() -> {
             if (player.getChannel() == null) {
                 return;
             }
 
-            final Collection<Integer> ownerPassengers = this.passengers.get(packetNameTag.getOwner().getUniqueId());
-            final Set<Integer> passengers = Sets.newHashSetWithExpectedSize(ownerPassengers.size() + 1);
+            final Collection<Integer> ownerPassengers = this.passengers.get(owner.getUniqueId());
+            final Set<Integer> passengers = Sets.newHashSetWithExpectedSize(ownerPassengers.size() + extraPassengers.size());
             passengers.addAll(ownerPassengers);
-            passengers.add(entityId);
+            passengers.addAll(extraPassengers);
             final int[] passengersArray = passengers.stream().sorted().mapToInt(i -> i).toArray();
             final WrapperPlayServerSetPassengers packet = new WrapperPlayServerSetPassengers(ownerId, passengersArray);
             player.sendPacketSilently(packet);

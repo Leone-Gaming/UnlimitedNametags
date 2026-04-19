@@ -160,7 +160,24 @@ public class PlaceholderManager {
     @NotNull
     public CompletableFuture<Map<Player, Component>> applyPlaceholders(@NotNull Player player, @NotNull List<Settings.LinesGroup> lines,
                                                                        @NotNull List<Player> relationalPlayers) {
-        return getCheckedLines(player, lines).thenApplyAsync(strings -> createComponent(player, strings, relationalPlayers), executorService);
+        return getCheckedLines(player, lines).thenApplyAsync(strings -> {
+            final Map<Player, List<Component>> perPlayerLines = createLines(player, strings, relationalPlayers);
+            final Map<Player, Component> result = Maps.newHashMapWithExpectedSize(perPlayerLines.size());
+            perPlayerLines.forEach((viewer, viewerLines) -> result.put(viewer, joinLines(viewerLines)));
+            return result;
+        }, executorService);
+    }
+
+    /**
+     * Like {@link #applyPlaceholders(Player, List, List)} but returns the per-line components, without joining.
+     * This is used for the PER_LINE_ENTITIES rendering mode.
+     */
+    @NotNull
+    public CompletableFuture<Map<Player, List<Component>>> applyPlaceholdersLines(@NotNull Player player,
+            @NotNull List<Settings.LinesGroup> lines,
+            @NotNull List<Player> relationalPlayers) {
+        return getCheckedLines(player, lines).thenApplyAsync(strings -> createLines(player, strings, relationalPlayers),
+                executorService);
     }
 
     @NotNull
@@ -173,7 +190,8 @@ public class PlaceholderManager {
     }
 
     @NotNull
-    private Map<Player, Component> createComponent(@NotNull Player player, @NotNull List<String> strings, @NotNull List<Player> relationalPlayers) {
+    private Map<Player, List<Component>> createLines(@NotNull Player player, @NotNull List<String> strings,
+            @NotNull List<Player> relationalPlayers) {
         final double moreLines = plugin.getHatHooks().stream()
                 .mapToDouble(h -> h.getHigh(player))
                 .filter(h -> h > 0)
@@ -181,15 +199,11 @@ public class PlaceholderManager {
                 .orElse(0d);
 
         final int moreLinesInt = (int) Math.ceil(moreLines);
-        Component emptyLines = Component.empty();
+        int extraEmptyLineCount = 0;
         if (moreLinesInt > 0) {
-            int linesCount = moreLinesInt / MORE_LINES;
-            for (int i = 0; i < linesCount; i++) {
-                emptyLines = emptyLines.append(Component.newline());
-            }
+            extraEmptyLineCount = moreLinesInt / MORE_LINES;
         }
 
-        final Component hatLines = emptyLines;
         final Settings settings = plugin.getConfigManager().getSettings();
         final boolean removeEmptyLines = settings.isRemoveEmptyLines();
         final boolean enableRelationalPlaceholders = settings.isEnableRelationalPlaceholders();
@@ -201,7 +215,7 @@ public class PlaceholderManager {
                 : strings;
 
         if (enableRelationalPlaceholders) {
-            final Map<Player, Component> result = Maps.newHashMapWithExpectedSize(relationalPlayers.size());
+            final Map<Player, List<Component>> result = Maps.newHashMapWithExpectedSize(relationalPlayers.size());
             for (Player viewer : relationalPlayers) {
                 List<Component> processedLines = baseStrings.stream()
                         .map(line -> replacePlaceholders(line, player, viewer))
@@ -209,9 +223,9 @@ public class PlaceholderManager {
                         .map(this::formatPhases)
                         .map(line -> format(line, player))
                         .filter(c -> !removeEmptyLines || !c.equals(Component.empty()))
-                        .toList();
-                Component finalComponent = joinLines(processedLines).append(hatLines);
-                result.put(viewer, finalComponent);
+                        .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+                appendHatLines(processedLines, extraEmptyLineCount);
+                result.put(viewer, processedLines);
             }
             return result;
         } else {
@@ -221,15 +235,25 @@ public class PlaceholderManager {
                     .map(this::formatPhases)
                     .map(line -> format(line, player))
                     .filter(c -> !removeEmptyLines || !c.equals(Component.empty()))
-                    .toList();
+                    .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
 
-            Component finalComponent = joinLines(processedLines).append(hatLines);
+            appendHatLines(processedLines, extraEmptyLineCount);
 
-            final Map<Player, Component> result = Maps.newHashMapWithExpectedSize(relationalPlayers.size());
+            final Map<Player, List<Component>> result = Maps.newHashMapWithExpectedSize(relationalPlayers.size());
             for (Player viewer : relationalPlayers) {
-                result.put(viewer, finalComponent);
+                result.put(viewer, processedLines);
             }
             return result;
+        }
+    }
+
+    private void appendHatLines(@NotNull List<Component> processedLines, int extraEmptyLineCount) {
+        if (extraEmptyLineCount <= 0) {
+            return;
+        }
+        // A single space renders as an "empty" line while still consuming line height.
+        for (int i = 0; i < extraEmptyLineCount; i++) {
+            processedLines.add(Component.text(" "));
         }
     }
 

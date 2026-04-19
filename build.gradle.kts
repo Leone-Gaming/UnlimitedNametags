@@ -79,7 +79,10 @@ dependencies {
     compileOnly(libs.libs.disguises)
     compileOnly(libs.hmcCosmetics)
 
-    implementation(libs.drink)
+    implementation(libs.cloud.annotations)
+    implementation(libs.cloud.bukkit)
+    implementation(libs.cloud.brigadier)
+    implementation(libs.cloud.paper)
     implementation(libs.universalScheduler)
     implementation(libs.libbyBukkit)
 
@@ -98,7 +101,7 @@ tasks.named<ShadowJar>("shadowJar") {
     relocate("org.intellij", relocation + "intellij")
     relocate("de.themoep", relocation + "themoep")
     relocate("me.tofaa.entitylib", relocation + "entitylib")
-    relocate("com.jonahseguin.drink", relocation + "drink")
+    relocate("org.incendo.cloud", relocation + "cloud")
     relocate("javax.annotation", relocation + "annotation")
     relocate("com.github.Anon8281.universalScheduler", relocation + "universalScheduler")
     relocate("net.kyori.adventure.text.serializer", "io.github.retrooper.packetevents.adventure.serializer")

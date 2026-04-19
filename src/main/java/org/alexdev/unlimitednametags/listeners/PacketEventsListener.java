@@ -66,9 +66,9 @@ public class PacketEventsListener extends PacketListenerAbstract {
 
         final WrapperPlayServerCamera camera = new WrapperPlayServerCamera(event);
         if (camera.getCameraId() == player.getEntityId()) {
-            plugin.getNametagManager().getPacketDisplayText(player).ifPresent(PacketNameTag::showForOwner);
+            plugin.getNametagManager().getPacketDisplayTexts(player).forEach(PacketNameTag::showForOwner);
         } else {
-            plugin.getNametagManager().getPacketDisplayText(player).ifPresent(PacketNameTag::hideForOwner);
+            plugin.getNametagManager().getPacketDisplayTexts(player).forEach(PacketNameTag::hideForOwner);
         }
     }
 
@@ -123,21 +123,36 @@ public class PacketEventsListener extends PacketListenerAbstract {
             return;
         }
 
-        final List<Integer> passengers = collectPassengers(packet.getPassengers());
-        final Optional<PacketNameTag> optionalPacketDisplayText = plugin.getNametagManager().getPacketDisplayText(player.get());
-        if (optionalPacketDisplayText.isEmpty()) {
-            plugin.getPacketManager().setPassengers(player.get(), passengers);
+        final List<Integer> basePassengers = collectPassengers(packet.getPassengers());
+        // Store only server-provided passengers (without nametag entities). We compute nametag passengers per viewer.
+        plugin.getPacketManager().setPassengers(player.get(), basePassengers);
+
+        if (!(event.getPlayer() instanceof Player viewer)) {
             return;
         }
 
-        if(!passengers.contains(optionalPacketDisplayText.get().getEntityId())) {
-            passengers.add(optionalPacketDisplayText.get().getEntityId());
+        final List<PacketNameTag> displays = plugin.getNametagManager().getPacketDisplayTexts(player.get());
+        if (displays.isEmpty()) {
+            return;
+        }
+
+        final List<Integer> passengers = new ArrayList<>(basePassengers);
+        boolean changed = false;
+        for (final PacketNameTag display : displays) {
+            if (!display.canPlayerSee(viewer)) {
+                continue;
+            }
+            if (!passengers.contains(display.getEntityId())) {
+                passengers.add(display.getEntityId());
+                changed = true;
+            }
+        }
+
+        if (changed) {
             passengers.sort(Comparator.naturalOrder());
             packet.setPassengers(passengers.stream().mapToInt(i -> i).toArray());
             event.markForReEncode(true);
         }
-
-        plugin.getPacketManager().setPassengers(player.get(), passengers);
     }
 
     @NotNull

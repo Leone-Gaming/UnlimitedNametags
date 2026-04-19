@@ -312,7 +312,7 @@ public class UNTAPI {
      * @param billboard the new billboard constraints
      */
     public void setNametagBillboard(@NotNull Player player, @NotNull AbstractDisplayMeta.BillboardConstraints billboard) {
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetNameTag -> {
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(packetNameTag -> {
             packetNameTag.setBillboard(billboard);
             packetNameTag.refresh();
         });
@@ -368,7 +368,7 @@ public class UNTAPI {
      * @param component the component to display as the nametag
      */
     public void setForcedNametag(@NotNull Player player, @NotNull Component component) {
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetNameTag -> {
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(packetNameTag -> {
             packetNameTag.setForcedNameTag(component);
             packetNameTag.refresh();
         });
@@ -383,7 +383,7 @@ public class UNTAPI {
      * @param component the component to display as the nametag
      */
     public void setForcedNametag(@NotNull Player player, @NotNull Player viewer, @NotNull Component component) {
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetNameTag -> {
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(packetNameTag -> {
             packetNameTag.setForcedNameTag(viewer.getUniqueId(), component);
             packetNameTag.refreshForPlayer(viewer);
         });
@@ -395,7 +395,7 @@ public class UNTAPI {
      * @param player the player whose forced nametag should be cleared
      */
     public void clearForcedNametag(@NotNull Player player) {
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetNameTag -> {
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(packetNameTag -> {
             packetNameTag.clearForcedNameTag();
             packetNameTag.refresh();
         });
@@ -408,7 +408,7 @@ public class UNTAPI {
      * @param viewer the player who was seeing the forced nametag
      */
     public void clearForcedNametag(@NotNull Player player, @NotNull Player viewer) {
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetNameTag -> {
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(packetNameTag -> {
             packetNameTag.clearForcedNameTag(viewer.getUniqueId());
             packetNameTag.refreshForPlayer(viewer);
         });

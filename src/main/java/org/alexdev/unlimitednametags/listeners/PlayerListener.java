@@ -6,6 +6,7 @@ import com.google.common.collect.Sets;
 import lombok.Getter;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.hook.PackSendHandler;
+import org.alexdev.unlimitednametags.packet.PacketNameTag;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
@@ -173,9 +174,10 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
 
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(display -> {
-            display.showToPlayer(event.getPlayer());
-        });
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.showToPlayer(event.getPlayer()));
+        // showToPlayer() doesn't recalculate placeholders; after a hide/show cycle the cached per-viewer text may be empty.
+        // Force a refresh so per-line entities get correct text + per-viewer stacking quickly.
+        plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> plugin.getNametagManager().refresh(player, false), 1);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -184,8 +186,14 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
 
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(display -> {
-            display.hideFromPlayer(event.getPlayer());
+        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.hideFromPlayer(event.getPlayer()));
+        // Ensure the passenger list for this viewer is updated to remove the nametag entities immediately.
+        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(primary -> {
+            final com.github.retrooper.packetevents.protocol.player.User user =
+                    com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(event.getPlayer());
+            if (user != null) {
+                primary.sendPassengersPacket(user);
+            }
         });
     }
 
@@ -216,11 +224,12 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
 
-        plugin.getNametagManager().getPacketDisplayText(player).ifPresent(packetDisplayText -> {
-            packetDisplayText.hideForOwner();
-
-            plugin.getTaskScheduler().runTaskLaterAsynchronously(packetDisplayText::showForOwner, 5);
-        });
+        final List<PacketNameTag> displays = plugin.getNametagManager().getPacketDisplayTexts(player);
+        if (displays.isEmpty()) {
+            return;
+        }
+        displays.forEach(PacketNameTag::hideForOwner);
+        plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> displays.forEach(PacketNameTag::showForOwner), 5);
     }
     
     @Nullable

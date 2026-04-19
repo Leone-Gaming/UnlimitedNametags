@@ -23,6 +23,17 @@ import java.util.*;
 @Getter
 public class Settings {
 
+    public enum TextDisplayMode {
+        /**
+         * Render the whole nametag as a single TextDisplay entity, using newline characters.
+         */
+        SINGLE_ENTITY,
+        /**
+         * Render one TextDisplay entity per line and stack them vertically.
+         */
+        PER_LINE_ENTITIES
+    }
+
     private Map<String, NameTag> nameTags = new LinkedHashMap<>() {{
         put("staffer", new NameTag("nametag.staffer", List.of(new LinesGroup(List.of("%luckperms_prefix% %player_name% %luckperms_suffix%"), List.of(new GlobalModifier(true)))),
                 new IntegerBackground(false, 255, 0, 0, 255, true, false), 1f));
@@ -30,6 +41,17 @@ public class Settings {
                 new LinesGroup(List.of("Rich Player"), List.of(new ConditionalModifier("%vault_eco_balance%", ">", "1000")))),
                 new HexBackground(false, "#ffffff", 255, false, false), 1f));
     }};
+
+    @Comment("""
+            How to render nametag text displays:
+            - SINGLE_ENTITY: one TextDisplay with newline separators (default)
+            - PER_LINE_ENTITIES: one TextDisplay per line, stacked vertically""")
+    private TextDisplayMode textDisplayMode = TextDisplayMode.SINGLE_ENTITY;
+
+    @Comment("""
+            Only used when textDisplayMode is PER_LINE_ENTITIES.
+            Vertical spacing between line entities (in blocks), before applying display scale.""")
+    private float perLineEntitySpacing = 0.25f;
 
     @Setter
     @Comment("The default billboard constraints for the nametag. CENTER, HORIZONTAL, VERTICAL, FIXED)")
