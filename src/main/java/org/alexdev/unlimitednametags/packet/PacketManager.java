@@ -3,6 +3,7 @@ package org.alexdev.unlimitednametags.packet;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.protocol.player.User;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBundle;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.github.retrooper.packetevents.util.SpigotReflectionUtil;
@@ -59,19 +60,17 @@ public class PacketManager {
 
     public void sendPassengersPacket(@NotNull User player, @NotNull Player owner, @NotNull Collection<Integer> extraPassengers) {
         final int ownerId = owner.getEntityId();
-        executorService.submit(() -> {
-            if (player.getChannel() == null) {
-                return;
-            }
+        if (player.getChannel() == null) {
+            return;
+        }
 
-            final Collection<Integer> ownerPassengers = this.passengers.get(owner.getUniqueId());
-            final Set<Integer> passengers = Sets.newHashSetWithExpectedSize(ownerPassengers.size() + extraPassengers.size());
-            passengers.addAll(ownerPassengers);
-            passengers.addAll(extraPassengers);
-            final int[] passengersArray = passengers.stream().sorted().mapToInt(i -> i).toArray();
-            final WrapperPlayServerSetPassengers packet = new WrapperPlayServerSetPassengers(ownerId, passengersArray);
-            player.sendPacketSilently(packet);
-        });
+        final Collection<Integer> ownerPassengers = this.passengers.get(owner.getUniqueId());
+        final Set<Integer> passengers = Sets.newHashSetWithExpectedSize(ownerPassengers.size() + extraPassengers.size());
+        passengers.addAll(ownerPassengers);
+        passengers.addAll(extraPassengers);
+        final int[] passengersArray = passengers.stream().sorted().mapToInt(i -> i).toArray();
+        final WrapperPlayServerSetPassengers packet = new WrapperPlayServerSetPassengers(ownerId, passengersArray);
+        player.sendPacketSilently(packet);
     }
 
     public void removePassenger(@NotNull Player player, int passenger) {
@@ -84,6 +83,21 @@ public class PacketManager {
 
     public void removePassenger(int passenger) {
         this.passengers.removeValueFromAll(passenger);
+    }
+
+    public void sendBundle(@NotNull User user, @NotNull Runnable runnable) {
+        if (user == null || user.getChannel() == null) {
+            return;
+        }
+
+        // Open bundle
+        user.sendPacket(new WrapperPlayServerBundle());
+        try {
+            runnable.run();
+        } catch (Exception ignored) {
+        }
+        // Close bundle
+        user.sendPacket(new WrapperPlayServerBundle());
     }
 
 }

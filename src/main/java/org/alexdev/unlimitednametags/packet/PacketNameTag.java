@@ -267,30 +267,31 @@ public class PacketNameTag {
 
         viewers.add(player.getUniqueId());
 
-        // Ensure the viewer-specific entity exists and the viewer is registered before spawning.
-        // Some EntityLib implementations only send spawn packets to current viewers.
-        perPlayerEntity.addViewer(viewerUser);
+        // Bundle spawn + metadata + passengers so they arrive in the same tick and avoid flicker
+        plugin.getPacketManager().sendBundle(viewerUser, () -> {
+            // Ensure the viewer-specific entity exists and the viewer is registered before spawning.
+            // Some EntityLib implementations only send spawn packets to current viewers.
+            perPlayerEntity.addViewer(viewerUser);
 
-        if (!isOwner(player)) {
-            final WrapperEntity viewerEntity = perPlayerEntity.getEntityOf(viewerUser);
-            if (viewerEntity != null) {
-                applyOwnerData(viewerEntity);
+            if (!isOwner(player)) {
+                final WrapperEntity viewerEntity = perPlayerEntity.getEntityOf(viewerUser);
+                if (viewerEntity != null) {
+                    applyOwnerData(viewerEntity);
+                }
             }
-        }
 
-        spawn(player);
+            spawn(player);
 
-        if (isOwner(player) && plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
-            setOwnerPosition();
-        } else {
-            setPosition();
-        }
+            if (isOwner(player) && plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
+                setOwnerPosition();
+            } else {
+                setPosition();
+            }
 
-        updateViewer(player.getUniqueId());
+            updateViewer(player.getUniqueId());
 
-        plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
             sendPassengersPacket(viewerUser);
-        }, 1);
+        });
     }
 
     private boolean isEligibleToShow(@NotNull Player player) {
@@ -402,22 +403,18 @@ public class PacketNameTag {
 
     public void spawnForOwner() {
         this.visible = true;
-        final User user = PacketEvents.getAPI().getPlayerManager().getUser(owner);
-        if (user == null) {
+        final User ownerUser = PacketEvents.getAPI().getPlayerManager().getUser(owner);
+        if (ownerUser == null) {
             return;
         }
-        modifyEntity(user, e -> {
-            e.despawn();
-            e.spawn(SpigotConversionUtil.fromBukkitLocation(getOffsetLocation()));
-        });
 
-        plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
-            final User ownerUser = getUser(owner);
-            if (ownerUser == null) {
-                return;
-            }
+        plugin.getPacketManager().sendBundle(ownerUser, () -> {
+            modifyEntity(ownerUser, e -> {
+                e.despawn();
+                e.spawn(SpigotConversionUtil.fromBukkitLocation(getOffsetLocation()));
+            });
             sendPassengersPacket(ownerUser);
-        }, 1);
+        });
     }
 
     public void sendPassengersPacket(@NotNull User player) {
