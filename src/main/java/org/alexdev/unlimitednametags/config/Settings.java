@@ -119,6 +119,11 @@ public class Settings {
     @Comment("How long to cache placeholders for (in ticks)")
     private int placeholderCacheTime = 1;
 
+    @Comment("""
+            Placeholders that should always be resolved fresh instead of using the placeholder cache.
+            Use the full placeholder text, including percent signs, for example: %player_ping%""")
+    private List<String> uncachedPlaceholders = new ArrayList<>();
+
     private boolean enableRelationalPlaceholders = false;
 
     public float getViewDistance() {

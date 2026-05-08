@@ -37,6 +37,8 @@ public class NameTagManager {
     private static final class ViewerSnapshot {
         private volatile int hash = 0;
         private volatile long lastSentAtMs = 0L;
+        private volatile boolean hasViewDistanceState = false;
+        private volatile boolean withinViewDistance = false;
     }
 
     private static final class NameTagEntry {
@@ -477,8 +479,9 @@ public class NameTagManager {
                     u -> new ViewerSnapshot());
             final boolean duePeriodicResend = unchangedResendSeconds > 0
                     && now - snapshot.lastSentAtMs >= unchangedResendSeconds * 1000L;
+            final boolean viewDistanceReentered = markViewDistanceState(snapshot, viewer, player, settings);
 
-            if (!force && snapshot.hash == newHash && !duePeriodicResend) {
+            if (!force && snapshot.hash == newHash && !duePeriodicResend && !viewDistanceReentered) {
                 return;
             }
 
@@ -504,10 +507,10 @@ public class NameTagManager {
                 }
             });
 
-            if (updateRef[0] || duePeriodicResend) {
+            if (updateRef[0] || duePeriodicResend || viewDistanceReentered) {
                 packetNameTag.refreshForPlayer(viewer);
             }
-            if (duePeriodicResend) {
+            if (duePeriodicResend || viewDistanceReentered) {
                 packetNameTag.sendPassengersPacket(user);
             }
 
@@ -566,8 +569,9 @@ public class NameTagManager {
                     u -> new ViewerSnapshot());
             final boolean duePeriodicResend = unchangedResendSeconds > 0
                     && now - snapshot.lastSentAtMs >= unchangedResendSeconds * 1000L;
+            final boolean viewDistanceReentered = markViewDistanceState(snapshot, viewer, player, settings);
 
-            if (!force && snapshot.hash == newHash && !duePeriodicResend) {
+            if (!force && snapshot.hash == newHash && !duePeriodicResend && !viewDistanceReentered) {
                 return;
             }
 
@@ -628,12 +632,12 @@ public class NameTagManager {
                             : -1));
                 });
 
-                if (updateRef[0] || duePeriodicResend) {
+                if (updateRef[0] || duePeriodicResend || viewDistanceReentered) {
                     lineDisplay.refreshForPlayer(viewer);
                 }
             }
 
-            if (passengersChanged || duePeriodicResend) {
+            if (passengersChanged || duePeriodicResend || viewDistanceReentered) {
                 // Keep the passenger list accurate for this viewer (important when the line count changes).
                 entry.primary().sendPassengersPacket(user);
             }
@@ -641,6 +645,25 @@ public class NameTagManager {
             snapshot.hash = newHash;
             snapshot.lastSentAtMs = now;
         });
+    }
+
+    private boolean markViewDistanceState(@NotNull ViewerSnapshot snapshot, @NotNull Player viewer,
+            @NotNull Player owner, @NotNull Settings settings) {
+        final boolean within = isWithinNametagViewDistance(viewer, owner, settings);
+        final boolean reentered = snapshot.hasViewDistanceState && !snapshot.withinViewDistance && within;
+        snapshot.hasViewDistanceState = true;
+        snapshot.withinViewDistance = within;
+        return reentered;
+    }
+
+    private boolean isWithinNametagViewDistance(@NotNull Player viewer, @NotNull Player owner,
+            @NotNull Settings settings) {
+        if (viewer.getWorld() != owner.getWorld()) {
+            return false;
+        }
+
+        final double viewDistance = settings.getViewDistance() * 160.0D;
+        return viewer.getLocation().distanceSquared(owner.getLocation()) <= viewDistance * viewDistance;
     }
 
     private int computeSingleEntityHash(@NotNull Settings settings, @NotNull Settings.NameTag nameTag,
@@ -758,27 +781,31 @@ public class NameTagManager {
             int count) {
         final int target = Math.max(1, count);
 
-        while (entry.displays.size() < target) {
-            final PacketNameTag added = new PacketNameTag(plugin, owner, nameTag);
-            // New line entities must be eligible to show; otherwise showToPlayer() is a no-op.
-            added.setVisible(entry.primary().isVisible());
-            // Keep new line entities consistent with current sneak state.
-            added.setSneaking(entry.primary().isSneaking());
-            entry.displays.add(added);
-            entityIdToDisplay.put(added.getEntityId(), added);
-            // Spawn for owner so future showToPlayer has a base entity instance to copy from.
-            added.text(owner, Component.empty());
-            added.spawn(owner);
-            // Ensure the new line is visible; some impls default TextDisplay opacity to 0.
-            added.setTextOpacity((byte) (added.isSneaking()
-                    ? plugin.getConfigManager().getSettings().getSneakOpacity()
-                    : -1));
-        }
+        // Placeholder application completes asynchronously, so the same nametag entry can be resized concurrently.
+        // CopyOnWriteArrayList iteration is safe, but size/remove-by-index is not atomic across multiple calls.
+        synchronized (entry) {
+            while (entry.displays.size() < target) {
+                final PacketNameTag added = new PacketNameTag(plugin, owner, nameTag);
+                // New line entities must be eligible to show; otherwise showToPlayer() is a no-op.
+                added.setVisible(entry.primary().isVisible());
+                // Keep new line entities consistent with current sneak state.
+                added.setSneaking(entry.primary().isSneaking());
+                entry.displays.add(added);
+                entityIdToDisplay.put(added.getEntityId(), added);
+                // Spawn for owner so future showToPlayer has a base entity instance to copy from.
+                added.text(owner, Component.empty());
+                added.spawn(owner);
+                // Ensure the new line is visible; some impls default TextDisplay opacity to 0.
+                added.setTextOpacity((byte) (added.isSneaking()
+                        ? plugin.getConfigManager().getSettings().getSneakOpacity()
+                        : -1));
+            }
 
-        while (entry.displays.size() > target) {
-            final PacketNameTag removed = entry.displays.remove(entry.displays.size() - 1);
-            entityIdToDisplay.remove(removed.getEntityId());
-            removed.remove();
+            while (entry.displays.size() > target) {
+                final PacketNameTag removed = entry.displays.remove(entry.displays.size() - 1);
+                entityIdToDisplay.remove(removed.getEntityId());
+                removed.remove();
+            }
         }
     }
 
@@ -848,7 +875,9 @@ public class NameTagManager {
             final Set<Player> players = tracked.stream()
                     .filter(Objects::nonNull)
                     .collect(Collectors.toSet());
-            players.add(entry.primary().getOwner());
+            if (plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
+                players.add(entry.primary().getOwner());
+            }
             entry.all().forEach(tag -> tag.showToPlayers(players));
             if (debug) {
                 plugin.getLogger().info("Showing nametag of " + player.getName() + " to tracked players: " +

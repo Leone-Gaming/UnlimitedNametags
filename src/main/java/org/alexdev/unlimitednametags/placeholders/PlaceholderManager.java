@@ -18,8 +18,10 @@ import java.text.DecimalFormatSymbols;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -58,6 +60,7 @@ public class PlaceholderManager {
     private Map<UUID, Map<String, String>> cachedPlaceholders;
     private final Map<String, String> formattedPhaseValues;
     private final Map<String, Map<String, String>> placeholdersReplacements;
+    private final Set<String> uncachedPlaceholders;
 
     public PlaceholderManager(@NotNull UnlimitedNameTags plugin) {
         this.plugin = plugin;
@@ -70,6 +73,7 @@ public class PlaceholderManager {
                 .build();
         this.formattedPhaseValues = Maps.newConcurrentMap();
         this.placeholdersReplacements = Maps.newConcurrentMap();
+        this.uncachedPlaceholders = ConcurrentHashMap.newKeySet();
         reloadPlaceholdersReplacements();
         createDecimalFormat();
         reload();
@@ -84,6 +88,7 @@ public class PlaceholderManager {
                 .expiration(plugin.getConfigManager().getSettings().getPlaceholderCacheTime() * 50L, TimeUnit.MILLISECONDS) // Adjusted unit based on previous code
                 .build()));
         reloadPlaceholdersReplacements();
+        reloadUncachedPlaceholders();
     }
 
     private void reloadPlaceholdersReplacements() {
@@ -93,6 +98,14 @@ public class PlaceholderManager {
             value.forEach((pr) -> replacements.put(pr.placeholder().toLowerCase(Locale.ROOT), pr.replacement()));
             placeholdersReplacements.put(key.toLowerCase(Locale.ROOT), replacements);
         });
+    }
+
+    private void reloadUncachedPlaceholders() {
+        uncachedPlaceholders.clear();
+        plugin.getConfigManager().getSettings().getUncachedPlaceholders().stream()
+                .filter(placeholder -> placeholder != null && !placeholder.isBlank())
+                .map(placeholder -> placeholder.trim().toLowerCase(Locale.ROOT))
+                .forEach(uncachedPlaceholders::add);
     }
 
     public void removePlayer(@NotNull Player player) {
@@ -361,8 +374,16 @@ public class PlaceholderManager {
 
     @NotNull
     public String getCachedPlaceholder(@NotNull Player player, @NotNull String placeholder) {
+        if (isPlaceholderCacheDisabled(placeholder)) {
+            return papiManager.setPlaceholders(player, placeholder);
+        }
+
         final Map<String, String> playerCache = getCachedPlaceholders(player);
         return playerCache.computeIfAbsent(placeholder, p -> papiManager.setPlaceholders(player, p));
+    }
+
+    private boolean isPlaceholderCacheDisabled(@NotNull String placeholder) {
+        return uncachedPlaceholders.contains(placeholder.toLowerCase(Locale.ROOT));
     }
 
 }

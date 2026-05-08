@@ -292,12 +292,22 @@ public class PacketNameTag {
 
             sendPassengersPacket(viewerUser);
         });
+
+        schedulePassengerResync(player);
     }
 
     private boolean isEligibleToShow(@NotNull Player player) {
         if (!visible) {
             if (plugin.getNametagManager().isDebug()) {
                 plugin.getLogger().info("Nametag is not visible for " + owner.getName());
+            }
+            return false;
+        }
+
+        if (isOwner(player) && !plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
+            if (plugin.getNametagManager().isDebug()) {
+                plugin.getLogger().info("Player " + player.getName()
+                        + " is the owner and show current nametag is disabled.");
             }
             return false;
         }
@@ -329,6 +339,14 @@ public class PacketNameTag {
             if (plugin.getNametagManager().isDebug()) {
                 plugin.getLogger()
                         .info("Player " + player.getName() + " is in a different world than owner " + owner.getName());
+            }
+            return false;
+        }
+
+        if (!isOwner(player) && !isOwnerTrackedBy(player)) {
+            if (plugin.getNametagManager().isDebug()) {
+                plugin.getLogger().info("Player " + player.getName()
+                        + " is not tracking owner " + owner.getName());
             }
             return false;
         }
@@ -408,6 +426,8 @@ public class PacketNameTag {
             return;
         }
 
+        viewers.add(owner.getUniqueId());
+
         plugin.getPacketManager().sendBundle(ownerUser, () -> {
             modifyEntity(ownerUser, e -> {
                 e.despawn();
@@ -415,6 +435,8 @@ public class PacketNameTag {
             });
             sendPassengersPacket(ownerUser);
         });
+
+        schedulePassengerResync(owner);
     }
 
     public void sendPassengersPacket(@NotNull User player) {
@@ -422,17 +444,46 @@ public class PacketNameTag {
             return;
         }
 
+        final Player viewer = plugin.getPlayerListener().getPlayer(player.getUUID());
+        if (viewer == null || !canSendPassengerPacket(viewer)) {
+            return;
+        }
+
         if (plugin.getConfigManager().getSettings().getTextDisplayMode() == Settings.TextDisplayMode.PER_LINE_ENTITIES) {
-            final Player viewer = plugin.getPlayerListener().getPlayer(player.getUUID());
             final Collection<Integer> visibleLineIds = plugin.getNametagManager().getPacketDisplayTexts(owner).stream()
-                    .filter(tag -> viewer == null || tag.canPlayerSee(viewer))
+                    .filter(tag -> tag.canPlayerSee(viewer))
                     .map(PacketNameTag::getEntityId)
                     .toList();
             plugin.getPacketManager().sendPassengersPacket(player, owner, visibleLineIds);
             return;
         }
 
-        plugin.getPacketManager().sendPassengersPacket(player, this);
+        final Collection<Integer> visibleIds = canPlayerSee(viewer)
+                ? List.of(entityId)
+                : List.of();
+        plugin.getPacketManager().sendPassengersPacket(player, owner, visibleIds);
+    }
+
+    private boolean canSendPassengerPacket(@NotNull Player viewer) {
+        if (!viewer.isOnline() || !owner.isOnline()) {
+            return false;
+        }
+
+        if (viewer.getWorld() != owner.getWorld()) {
+            return false;
+        }
+
+        if (isOwner(viewer)) {
+            return true;
+        }
+
+        return isOwnerTrackedBy(viewer);
+    }
+
+    private boolean isOwnerTrackedBy(@NotNull Player viewer) {
+        return plugin.getTrackerManager()
+                .getTrackedPlayers(viewer.getUniqueId())
+                .contains(owner.getUniqueId());
     }
 
     public void sendPassengerPacketToViewers() {
@@ -450,6 +501,23 @@ public class PacketNameTag {
                 sendPassengersPacket(user);
             }
         });
+    }
+
+    private void schedulePassengerResync(@NotNull Player player) {
+        plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
+            if (removed || !canPlayerSee(player)) {
+                return;
+            }
+
+            final User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
+            if (user == null) {
+                return;
+            }
+
+            // Retry shortly after the initial spawn in case the owner's entity was not yet fully tracked
+            // when the first passenger packet was sent.
+            sendPassengersPacket(user);
+        }, 5);
     }
 
     private void setPosition() {
@@ -487,6 +555,7 @@ public class PacketNameTag {
         }
         relationalCache.remove(player.getUniqueId());
         calculatedTextCache.remove(player.getUniqueId());
+        sendPassengersPacket(user);
     }
 
     public void clearViewers() {
@@ -501,6 +570,17 @@ public class PacketNameTag {
 
     public void showToPlayers(Set<Player> players) {
         players.forEach(this::showToPlayer);
+    }
+
+    public void prepareForPlayer(@NotNull Player player) {
+        final User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
+        if (user == null) {
+            return;
+        }
+
+        // Materialize the per-player wrapper without sending a spawn packet.
+        modifyEntity(user, e -> {
+        });
     }
 
     public void hideFromPlayerSilently(@NotNull Player player) {
@@ -551,8 +631,24 @@ public class PacketNameTag {
     }
 
     public void remove() {
-        removed = true;
+        if (removed) {
+            return;
+        }
+
+        final Set<UUID> previousViewers = new HashSet<>(viewers);
         viewers.clear();
+        previousViewers.forEach(u -> {
+            final Player player = plugin.getPlayerListener().getPlayer(u);
+            if (player == null) {
+                return;
+            }
+            final User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
+            if (user != null && user.getChannel() != null) {
+                sendPassengersPacket(user);
+            }
+        });
+
+        removed = true;
         perPlayerEntity.getEntities().keySet().forEach(u -> {
             final Player player = plugin.getPlayerListener().getPlayer(u);
             if (player == null) {
