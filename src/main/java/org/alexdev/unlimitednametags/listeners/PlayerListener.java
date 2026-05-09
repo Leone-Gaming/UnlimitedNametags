@@ -174,7 +174,11 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
 
-        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.showToPlayer(event.getPlayer()));
+        if (plugin.getHook(org.alexdev.unlimitednametags.hook.ApolloHook.class).map(h -> h.isApolloPlayer(event.getPlayer())).orElse(false)) {
+            plugin.getNametagManager().updateDisplay(event.getPlayer(), player);
+        } else {
+            plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.showToPlayer(event.getPlayer()));
+        }
         // showToPlayer() doesn't recalculate placeholders; after a hide/show cycle the cached per-viewer text may be empty.
         // Force a refresh so per-line entities get correct text + per-viewer stacking quickly.
         plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> plugin.getNametagManager().refresh(player, false), 1);
@@ -186,7 +190,11 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
 
-        plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.hideFromPlayer(event.getPlayer()));
+        if (plugin.getHook(org.alexdev.unlimitednametags.hook.ApolloHook.class).map(h -> h.isApolloPlayer(event.getPlayer())).orElse(false)) {
+            plugin.getNametagManager().removeDisplay(event.getPlayer(), player);
+        } else {
+            plugin.getNametagManager().getPacketDisplayTexts(player).forEach(display -> display.hideFromPlayer(event.getPlayer()));
+        }
         // Ensure the passenger list for this viewer is updated to remove the nametag entities immediately.
         plugin.getNametagManager().getPacketDisplayText(player).ifPresent(primary -> {
             final com.github.retrooper.packetevents.protocol.player.User user =

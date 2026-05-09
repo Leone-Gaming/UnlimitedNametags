@@ -9,12 +9,7 @@ import com.lunarclient.apollo.module.nametag.NametagModule;
 import com.lunarclient.apollo.player.ApolloPlayer;
 import net.kyori.adventure.text.Component;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.HandlerList;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerRegisterChannelEvent;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -35,8 +30,6 @@ public final class ApolloHook extends Hook {
     private Consumer<ApolloRegisterPlayerEvent> registerListener;
     private Consumer<ApolloUnregisterPlayerEvent> unregisterListener;
     private final Set<UUID> readyPlayers = ConcurrentHashMap.newKeySet();
-    private final Set<UUID> channelDetectedPlayers = ConcurrentHashMap.newKeySet();
-    private Listener bukkitChannelListener;
 
     public ApolloHook(@NotNull UnlimitedNameTags plugin) {
         super(plugin);
@@ -71,18 +64,6 @@ public final class ApolloHook extends Hook {
             EventBus.getBus().register(ApolloRegisterPlayerEvent.class, registerListener);
             EventBus.getBus().register(ApolloUnregisterPlayerEvent.class, unregisterListener);
 
-            // Early detection: mark players as Apollo-capable as soon as they register the plugin channel.
-            // This prevents spawning TextDisplays in the small window before Apollo finishes registering them.
-            bukkitChannelListener = new Listener() {
-                @EventHandler
-                public void onRegisterChannel(PlayerRegisterChannelEvent event) {
-                    if ("lunar:apollo".equalsIgnoreCase(event.getChannel())) {
-                        channelDetectedPlayers.add(event.getPlayer().getUniqueId());
-                    }
-                }
-            };
-            Bukkit.getPluginManager().registerEvents(bukkitChannelListener, plugin);
-
             // If the plugin is reloaded while players are online, the register event won't re-fire.
             // Push nametags for currently connected Apollo players.
             plugin.getServer().getOnlinePlayers().forEach(p -> {
@@ -111,12 +92,7 @@ public final class ApolloHook extends Hook {
             EventBus.getBus().unregister(ApolloUnregisterPlayerEvent.class, unregisterListener);
             unregisterListener = null;
         }
-        if (bukkitChannelListener != null) {
-            HandlerList.unregisterAll(bukkitChannelListener);
-            bukkitChannelListener = null;
-        }
         readyPlayers.clear();
-        channelDetectedPlayers.clear();
         this.nametagModule = null;
     }
 
@@ -132,7 +108,7 @@ public final class ApolloHook extends Hook {
             return false;
         }
         try {
-            return channelDetectedPlayers.contains(player.getUniqueId()) || Apollo.getPlayerManager().hasSupport(player.getUniqueId());
+            return Apollo.getPlayerManager().getPlayer(player.getUniqueId()).isPresent();
         } catch (Throwable ignored) {
             return false;
         }
