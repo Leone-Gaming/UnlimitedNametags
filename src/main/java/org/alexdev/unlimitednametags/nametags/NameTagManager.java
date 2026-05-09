@@ -12,9 +12,11 @@ import lombok.AccessLevel;
 import lombok.Setter;
 import me.tofaa.entitylib.meta.display.AbstractDisplayMeta;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.format.TextColor;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.config.Settings;
+import org.alexdev.unlimitednametags.hook.ApolloHook;
 import org.alexdev.unlimitednametags.hook.HMCCosmeticsHook;
 import org.alexdev.unlimitednametags.hook.ViaVersionHook;
 import org.alexdev.unlimitednametags.packet.PacketNameTag;
@@ -29,6 +31,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 @Getter
@@ -164,6 +167,113 @@ public class NameTagManager {
 
     private boolean isPerLineEntitiesMode() {
         return plugin.getConfigManager().getSettings().getTextDisplayMode() == Settings.TextDisplayMode.PER_LINE_ENTITIES;
+    }
+
+    private boolean shouldUseApollo(@NotNull Player viewer) {
+        return plugin.getHook(ApolloHook.class).map(h -> h.isApolloPlayer(viewer)).orElse(false);
+    }
+
+    private void apolloOverride(@NotNull Player viewer, @NotNull Player target, @NotNull List<Component> lines) {
+        final List<Component> normalized = normalizeApolloLines(target, lines);
+        if (normalized.isEmpty()) {
+            // Don't override to an empty nametag; keep vanilla visible by resetting.
+            apolloReset(viewer, target);
+            return;
+        }
+        plugin.getHook(ApolloHook.class).ifPresent(h -> h.overrideNametag(viewer, target.getUniqueId(), normalized));
+    }
+
+    private void apolloOverrideIfNeeded(@NotNull NameTagEntry entry, @NotNull Player viewer, @NotNull Player target,
+            @NotNull List<Component> lines, boolean force) {
+        if (hideNametags.contains(viewer.getUniqueId())) {
+            apolloReset(viewer, target);
+            return;
+        }
+        if (plugin.getVanishManager().isVanished(target) && !plugin.getVanishManager().canSee(viewer, target)) {
+            apolloReset(viewer, target);
+            return;
+        }
+
+        final Settings settings = plugin.getConfigManager().getSettings();
+        final int unchangedResendSeconds = settings.getUnchangedResendIntervalSeconds();
+        final long now = System.currentTimeMillis();
+
+        final List<Component> normalized = normalizeApolloLines(target, lines);
+        if (normalized.isEmpty()) {
+            // Don't override to an empty nametag; keep vanilla visible by resetting.
+            apolloReset(viewer, target);
+            final ViewerSnapshot snapshot = entry.viewerSnapshots.computeIfAbsent(viewer.getUniqueId(),
+                    u -> new ViewerSnapshot());
+            snapshot.hash = 0;
+            snapshot.lastSentAtMs = now;
+            return;
+        }
+        final int newHash = normalized.hashCode();
+        final ViewerSnapshot snapshot = entry.viewerSnapshots.computeIfAbsent(viewer.getUniqueId(), u -> new ViewerSnapshot());
+        final boolean duePeriodicResend = unchangedResendSeconds > 0
+                && now - snapshot.lastSentAtMs >= unchangedResendSeconds * 1000L;
+        final boolean viewDistanceReentered = markViewDistanceState(snapshot, viewer, target, settings);
+
+        if (!force && snapshot.hash == newHash && !duePeriodicResend && !viewDistanceReentered) {
+            return;
+        }
+
+        if (debug) {
+            plugin.getLogger().info("Apollo send: viewer=" + viewer.getName() + " target=" + target.getName()
+                    + " force=" + force + " periodic=" + duePeriodicResend + " reentered=" + viewDistanceReentered);
+        }
+
+        plugin.getHook(ApolloHook.class).ifPresent(h -> h.overrideNametag(viewer, target.getUniqueId(), normalized));
+        snapshot.hash = newHash;
+        snapshot.lastSentAtMs = now;
+    }
+
+    private void apolloReset(@NotNull Player viewer, @NotNull Player target) {
+        if (debug) {
+            plugin.getLogger().info("Apollo reset: viewer=" + viewer.getName() + " target=" + target.getName());
+        }
+        plugin.getHook(ApolloHook.class).ifPresent(h -> h.resetNametag(viewer, target.getUniqueId()));
+    }
+
+    private void apolloResetAll(@NotNull Player viewer) {
+        plugin.getHook(ApolloHook.class).ifPresent(h -> h.resetNametags(viewer));
+    }
+
+    @NotNull
+    private List<Component> normalizeApolloLines(@NotNull Player target, @NotNull List<Component> lines) {
+        // Apollo renders list order inverted relative to how we stack TextDisplays (top line first).
+        // Reverse so the visual order matches existing config expectations.
+        final ArrayList<Component> out = new ArrayList<>(lines.size());
+        out.addAll(lines);
+        Collections.reverse(out);
+
+        // Apollo's Nametag module enhances the vanilla nametag (name line), so including the player's name
+        // as one of the Apollo lines results in a duplicated nametag. Strip the exact name line if present.
+        final String targetName = target.getName();
+        out.removeIf(c -> {
+            if (c == null) {
+                return true;
+            }
+            // Avoid using PlainTextComponentSerializer here: this project shades/relocates Adventure serializers
+            // and the "plain" serializer isn't guaranteed to exist at runtime.
+            if (!(c instanceof TextComponent tc)) {
+                return false;
+            }
+            if (!tc.children().isEmpty()) {
+                return false;
+            }
+            return tc.content().equalsIgnoreCase(targetName);
+        });
+
+        // If every line is effectively empty, return no Apollo lines and rely on vanilla nametag.
+        final Predicate<Component> emptyish = c -> c == null
+                || c.equals(Component.empty())
+                || c.equals(Component.text(""))
+                || c.equals(Component.text(" "));
+        if (out.isEmpty() || out.stream().allMatch(emptyish)) {
+            return List.of();
+        }
+        return out;
     }
 
     @NotNull
@@ -416,15 +526,34 @@ public class NameTagManager {
             }
         }
 
-        final List<Player> relationalPlayers = getViewersUnion(entry).stream()
-                .map(Bukkit::getPlayer)
-                .filter(Objects::nonNull)
+        // Apollo viewers are derived from the tracker (they won't be in our TextDisplay viewer set).
+        final Set<Player> trackedViewers = new HashSet<>(plugin.getTrackerManager().getWhoTracks(player));
+        final boolean showCurrent = plugin.getConfigManager().getSettings().isShowCurrentNameTag();
+        if (showCurrent) {
+            trackedViewers.add(player);
+        }
+
+        final List<Player> apolloViewers = trackedViewers.stream()
+                .filter(this::shouldUseApollo)
+                .filter(v -> !hideNametags.contains(v.getUniqueId()))
                 .toList();
 
+        final Set<Player> textDisplayViewers = getViewersUnion(entry).stream()
+                .map(Bukkit::getPlayer)
+                .filter(Objects::nonNull)
+                .filter(v -> !shouldUseApollo(v))
+                .collect(Collectors.toSet());
+        if (showCurrent && !shouldUseApollo(player)) {
+            textDisplayViewers.add(player);
+        }
+
         if (isPerLineEntitiesMode()) {
-            final List<Player> withOwner = new ArrayList<>(relationalPlayers.size() + 1);
-            withOwner.add(player); // always include owner so line-count changes still allocate entities
-            withOwner.addAll(relationalPlayers.stream().filter(p -> !p.equals(player)).toList());
+            final Set<Player> combined = new HashSet<>(textDisplayViewers);
+            combined.add(player); // always include owner so line-count changes still allocate entities
+
+            final List<Player> withOwner = new ArrayList<>(combined.size());
+            withOwner.add(player);
+            withOwner.addAll(combined.stream().filter(p -> !p.equals(player)).toList());
             plugin.getPlaceholderManager().applyPlaceholdersLines(player, nametag.linesGroups(), withOwner)
                     .thenAccept(lines -> editDisplayLines(player, lines, nametag, force))
                     .exceptionally(throwable -> {
@@ -432,16 +561,64 @@ public class NameTagManager {
                                 "Failed to edit nametag for " + player.getName(), throwable);
                         return null;
                     });
+
+            if (!apolloViewers.isEmpty()) {
+                plugin.getPlaceholderManager().applyPlaceholdersLines(player, nametag.linesGroups(), apolloViewers)
+                        .thenAccept(lines -> apolloViewers.forEach(viewer -> {
+                            if (plugin.getVanishManager().isVanished(player) && !plugin.getVanishManager().canSee(viewer, player)) {
+                                apolloReset(viewer, player);
+                                return;
+                            }
+                            final List<Component> viewerLines = lines.get(viewer);
+                            if (viewerLines != null) {
+                                apolloOverride(viewer, player, viewerLines);
+                            }
+                        }))
+                        .exceptionally(throwable -> {
+                            plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                                    "Failed to edit Apollo nametag for " + player.getName(), throwable);
+                            return null;
+                        });
+            }
             return;
         }
 
-        plugin.getPlaceholderManager().applyPlaceholders(player, nametag.linesGroups(), relationalPlayers)
-                .thenAccept(lines -> editDisplay(player, lines, nametag, force))
-                .exceptionally(throwable -> {
-                    plugin.getLogger().log(java.util.logging.Level.SEVERE,
-                            "Failed to edit nametag for " + player.getName(), throwable);
-                    return null;
-                });
+        // Non-PER_LINE: keep TextDisplay work for non-Apollo viewers only, and use Apollo for Lunar viewers.
+        if (!textDisplayViewers.isEmpty()) {
+            plugin.getPlaceholderManager().applyPlaceholders(player, nametag.linesGroups(),
+                            new ArrayList<>(textDisplayViewers))
+                    .thenAccept(lines -> editDisplay(player, lines, nametag, force))
+                    .exceptionally(throwable -> {
+                        plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                                "Failed to edit nametag for " + player.getName(), throwable);
+                        return null;
+                    });
+        }
+
+        if (!apolloViewers.isEmpty()) {
+            plugin.getPlaceholderManager().applyPlaceholdersLines(player, nametag.linesGroups(), apolloViewers)
+                    .thenAccept(lines -> apolloViewers.forEach(viewer -> {
+                        if (plugin.getVanishManager().isVanished(player) && !plugin.getVanishManager().canSee(viewer, player)) {
+                            apolloReset(viewer, player);
+                            return;
+                        }
+                        final List<Component> viewerLines = lines.get(viewer);
+                        if (viewerLines == null) {
+                            return;
+                        }
+                        final NameTagEntry currentEntry = nameTags.get(player.getUniqueId());
+                        if (currentEntry != null) {
+                            apolloOverrideIfNeeded(currentEntry, viewer, player, viewerLines, force);
+                        } else {
+                            apolloOverride(viewer, player, viewerLines);
+                        }
+                    }))
+                    .exceptionally(throwable -> {
+                        plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                                "Failed to edit Apollo nametag for " + player.getName(), throwable);
+                        return null;
+                    });
+        }
     }
 
     private void editDisplay(@NotNull Player player, Map<Player, Component> components,
@@ -532,8 +709,13 @@ public class NameTagManager {
         final float baseYOffset = plugin.getConfigManager().getSettings().getYOffset();
         final float spacingBase = plugin.getConfigManager().getSettings().getPerLineEntitySpacing();
 
-        // Make sure we have enough entities to satisfy the maximum line count across viewers.
-        final int maxLines = Math.max(1, components.values().stream().mapToInt(List::size).max().orElse(1));
+        // Make sure we have enough entities to satisfy the maximum line count across TextDisplay viewers.
+        // Apollo viewers do not use server-side TextDisplay entities.
+        final int maxLines = Math.max(1, components.entrySet().stream()
+                .filter(e -> !shouldUseApollo(e.getKey()))
+                .mapToInt(e -> e.getValue().size())
+                .max()
+                .orElse(1));
         ensureDisplayCount(player, nameTag, entry, maxLines);
         updateLineOffsets(entry, baseYOffset, spacingBase);
 
@@ -549,6 +731,14 @@ public class NameTagManager {
 
         // Update per-viewer text (and show/hide line entities depending on the viewer's line count).
         components.forEach((viewer, viewerLines) -> {
+            if (shouldUseApollo(viewer)) {
+                apolloOverrideIfNeeded(entry, viewer, player, viewerLines, force);
+
+                // Ensure we don't leave TextDisplay entities visible for Lunar viewers.
+                entry.all().forEach(tag -> tag.hideFromPlayerSilently(viewer));
+                return;
+            }
+
             final Settings settings = plugin.getConfigManager().getSettings();
             final int unchangedResendSeconds = settings.getUnchangedResendIntervalSeconds();
             final long now = System.currentTimeMillis();
@@ -843,6 +1033,13 @@ public class NameTagManager {
             });
         }
 
+        // Clean up Apollo overrides for this target (best-effort).
+        plugin.getPlayerListener().getOnlinePlayers().values().forEach(viewer -> {
+            if (viewer != null && shouldUseApollo(viewer)) {
+                apolloReset(viewer, player);
+            }
+        });
+
         final UUID quittingUuid = player.getUniqueId();
         nameTags.forEach((uuid, otherEntry) -> {
             otherEntry.viewerSnapshots.remove(quittingUuid);
@@ -878,7 +1075,37 @@ public class NameTagManager {
             if (plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
                 players.add(entry.primary().getOwner());
             }
-            entry.all().forEach(tag -> tag.showToPlayers(players));
+
+            final Set<Player> apolloPlayers = players.stream().filter(this::shouldUseApollo).collect(Collectors.toSet());
+            final Set<Player> textDisplayPlayers = players.stream().filter(p -> !shouldUseApollo(p)).collect(Collectors.toSet());
+
+            if (!textDisplayPlayers.isEmpty()) {
+                entry.all().forEach(tag -> tag.showToPlayers(textDisplayPlayers));
+            }
+
+            if (!apolloPlayers.isEmpty()) {
+                final Settings.NameTag nameTag = getEffectiveNametag(player);
+                plugin.getPlaceholderManager().applyPlaceholdersLines(player, nameTag.linesGroups(), new ArrayList<>(apolloPlayers))
+                        .thenAccept(lines -> apolloPlayers.forEach(viewer -> {
+                            if (hideNametags.contains(viewer.getUniqueId())) {
+                                apolloReset(viewer, player);
+                                return;
+                            }
+                            if (plugin.getVanishManager().isVanished(player) && !plugin.getVanishManager().canSee(viewer, player)) {
+                                apolloReset(viewer, player);
+                                return;
+                            }
+                            final List<Component> viewerLines = lines.get(viewer);
+                            if (viewerLines != null) {
+                                apolloOverride(viewer, player, viewerLines);
+                            }
+                        }))
+                        .exceptionally(throwable -> {
+                            plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                                    "Failed to show Apollo nametag for " + player.getName(), throwable);
+                            return null;
+                        });
+            }
             if (debug) {
                 plugin.getLogger().info("Showing nametag of " + player.getName() + " to tracked players: " +
                         players.stream().map(Player::getName).collect(Collectors.joining(", ")));
@@ -898,6 +1125,11 @@ public class NameTagManager {
             display.viewerSnapshots.remove(player.getUniqueId());
         });
         getPacketDisplayTexts(player).forEach(PacketNameTag::clearViewers);
+
+        // For Lunar viewers, clear all Apollo overrides too.
+        if (shouldUseApollo(player)) {
+            apolloResetAll(player);
+        }
     }
 
     public void removeAll() {
@@ -1019,6 +1251,8 @@ public class NameTagManager {
             return;
         }
         final Set<UUID> viewers = new HashSet<>(getViewersUnion(entry));
+        // Also include tracked viewers (Apollo viewers might never be in our TextDisplay viewer set).
+        plugin.getTrackerManager().getWhoTracks(player).forEach(v -> viewers.add(v.getUniqueId()));
         final boolean isVanished = plugin.getVanishManager().isVanished(player);
         viewers.forEach(uuid -> {
             final Player viewer = plugin.getPlayerListener().getPlayer(uuid);
@@ -1028,7 +1262,11 @@ public class NameTagManager {
             if (isVanished && !plugin.getVanishManager().canSee(viewer, player)) {
                 return;
             }
-            entry.all().forEach(tag -> tag.hideFromPlayer(viewer));
+            if (shouldUseApollo(viewer)) {
+                apolloReset(viewer, player);
+            } else {
+                entry.all().forEach(tag -> tag.hideFromPlayer(viewer));
+            }
         });
     }
 
@@ -1038,12 +1276,24 @@ public class NameTagManager {
             return;
         }
         final Set<UUID> viewers = new HashSet<>(getViewersUnion(entry));
+        plugin.getTrackerManager().getWhoTracks(player).forEach(v -> viewers.add(v.getUniqueId()));
         viewers.forEach(uuid -> {
             final Player viewer = plugin.getPlayerListener().getPlayer(uuid);
             if (viewer == null || viewer == player) {
                 return;
             }
-            entry.all().forEach(tag -> tag.showToPlayer(viewer));
+            if (shouldUseApollo(viewer)) {
+                final Settings.NameTag nameTag = getEffectiveNametag(player);
+                plugin.getPlaceholderManager().applyPlaceholdersLines(player, nameTag.linesGroups(), List.of(viewer))
+                        .thenAccept(lines -> {
+                            final List<Component> viewerLines = lines.get(viewer);
+                            if (viewerLines != null) {
+                                apolloOverride(viewer, player, viewerLines);
+                            }
+                        });
+            } else {
+                entry.all().forEach(tag -> tag.showToPlayer(viewer));
+            }
         });
     }
 
@@ -1059,6 +1309,42 @@ public class NameTagManager {
     }
 
     public void updateDisplay(@NotNull Player player, @NotNull Player target) {
+        // Lunar Client viewers: delegate to Apollo (no TextDisplay entities for them).
+        if (shouldUseApollo(player)) {
+            // Clean up any previously spawned TextDisplay entities for this viewer (e.g. before Apollo handshake).
+            getPacketDisplayTexts(target).forEach(packetNameTag -> packetNameTag.hideFromPlayer(player));
+
+            if (hideNametags.contains(player.getUniqueId())) {
+                apolloReset(player, target);
+                return;
+            }
+            if (plugin.getVanishManager().isVanished(target) && !plugin.getVanishManager().canSee(player, target)) {
+                apolloReset(player, target);
+                return;
+            }
+
+            final Settings.NameTag nameTag = getEffectiveNametag(target);
+            plugin.getPlaceholderManager().applyPlaceholdersLines(target, nameTag.linesGroups(), List.of(player))
+                    .thenAccept(lines -> {
+                        final List<Component> viewerLines = lines.get(player);
+                        if (viewerLines != null) {
+                            final NameTagEntry entry = nameTags.get(target.getUniqueId());
+                            if (entry != null) {
+                                apolloOverrideIfNeeded(entry, player, target, viewerLines, false);
+                            } else {
+                                apolloOverride(player, target, viewerLines);
+                            }
+                        }
+                    })
+                    .exceptionally(throwable -> {
+                        plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                                "Failed to update Apollo nametag for " + target.getName() + " -> " + player.getName(),
+                                throwable);
+                        return null;
+                    });
+            return;
+        }
+
         if (player == target && plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
             showToOwner(player);
             return;
@@ -1077,6 +1363,9 @@ public class NameTagManager {
     }
 
     public void removeDisplay(@NotNull Player player, @NotNull Player target) {
+        if (shouldUseApollo(player)) {
+            apolloReset(player, target);
+        }
         if (player == target && !plugin.getConfigManager().getSettings().isShowCurrentNameTag()) {
             return;
         }
@@ -1107,6 +1396,11 @@ public class NameTagManager {
                 return;
             }
 
+            if (shouldUseApollo(player)) {
+                updateDisplay(player, owner);
+                return;
+            }
+
             display.all().forEach(tag -> {
                 tag.getBlocked().remove(player.getUniqueId());
                 tag.hideFromPlayerSilently(player);
@@ -1116,6 +1410,17 @@ public class NameTagManager {
     }
 
     public void refreshDisplaysForPlayer(@NotNull Player player) {
+        if (shouldUseApollo(player)) {
+            // Apollo viewers don't use TextDisplays; re-push Apollo overrides for currently tracked targets.
+            plugin.getTrackerManager().getTrackedPlayers(player.getUniqueId()).forEach(uuid -> {
+                final Player tracked = plugin.getPlayerListener().getPlayer(uuid);
+                if (tracked != null) {
+                    updateDisplay(player, tracked);
+                }
+            });
+            return;
+        }
+
         nameTags.forEach((uuid, display) -> {
             if (!display.primary().canPlayerSee(player)) {
                 return;
@@ -1136,6 +1441,9 @@ public class NameTagManager {
                 display.all().forEach(tag -> tag.hideFromPlayer(player));
             }
         });
+        if (shouldUseApollo(player)) {
+            apolloResetAll(player);
+        }
     }
 
     public void showOtherNametags(@NotNull Player player) {
@@ -1146,7 +1454,11 @@ public class NameTagManager {
                 return;
             }
 
-            getPacketDisplayTexts(tracked).forEach(display -> display.showToPlayer(player));
+            if (shouldUseApollo(player)) {
+                updateDisplay(player, tracked);
+            } else {
+                getPacketDisplayTexts(tracked).forEach(display -> display.showToPlayer(player));
+            }
         });
     }
 

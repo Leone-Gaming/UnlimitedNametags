@@ -13,6 +13,10 @@ version = property("version") as String
 repositories {
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
+    maven {
+        name = "lunarclient"
+        url = uri("https://repo.lunarclient.dev")
+    }
     maven("https://repo.nexomc.com/snapshots/")
     maven("https://oss.sonatype.org/content/groups/public/")
     maven("https://repo.extendedclip.com/releases")
@@ -53,6 +57,7 @@ dependencies {
 
     compileOnly(libs.paperApi)
     compileOnly(libs.adventureApi)
+    compileOnly("com.lunarclient:apollo-api:1.2.5")
     implementation(libs.entityLib)
     compileOnly(libs.typeWriter) {
         exclude(group = "io.papermc.paper") // Exclude Paper API

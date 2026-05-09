@@ -17,6 +17,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTe
 import com.google.common.collect.Maps;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.data.TeamData;
+import org.alexdev.unlimitednametags.hook.ApolloHook;
 import org.alexdev.unlimitednametags.packet.PacketNameTag;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -168,6 +169,14 @@ public class PacketEventsListener extends PacketListenerAbstract {
     private boolean preTeamsChecks(@NotNull PacketSendEvent event) {
         if (!plugin.getConfigManager().getSettings().isDisableDefaultNameTag()) {
             return false;
+        }
+
+        // For Lunar/Apollo players, do not hide vanilla nametags.
+        // Apollo's Nametag module "enhances" the vanilla nametag; hiding vanilla makes Apollo nametags invisible.
+        if (event.getPlayer() instanceof Player player) {
+            if (plugin.getHook(ApolloHook.class).map(h -> h.isApolloPlayer(player)).orElse(false)) {
+                return false;
+            }
         }
 
         return event.getUser().getClientVersion().isNewerThan(ClientVersion.V_1_19_3);

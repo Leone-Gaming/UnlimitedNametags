@@ -186,6 +186,11 @@ public final class UnlimitedNameTags extends JavaPlugin {
     private void loadHooks() {
         hatHooks.add(new AdvancedHatHook(this));
 
+        // Lunar Client (Apollo) nametags
+        if (Bukkit.getPluginManager().isPluginEnabled("Apollo-Bukkit") || Bukkit.getPluginManager().isPluginEnabled("Apollo-Folia")) {
+            hooks.put(ApolloHook.class, new ApolloHook(this));
+        }
+
         if (Bukkit.getPluginManager().isPluginEnabled("TypeWriter")) {
             hooks.put(TypeWriterListener.class, new TypeWriterListener(this));
             getLogger().info("TypeWriter found, hooking into it");

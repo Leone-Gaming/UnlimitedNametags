@@ -20,6 +20,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.alexdev.unlimitednametags.UnlimitedNameTags;
 import org.alexdev.unlimitednametags.config.Settings;
+import org.alexdev.unlimitednametags.hook.ApolloHook;
 import org.alexdev.unlimitednametags.hook.ViaVersionHook;
 import org.bukkit.Color;
 import org.bukkit.Location;
@@ -252,6 +253,11 @@ public class PacketNameTag {
     }
 
     public void showToPlayer(@NotNull Player player) {
+        // Apollo (Lunar Client) viewers must never receive TextDisplay-based nametags.
+        if (plugin.getHook(ApolloHook.class).map(h -> h.isApolloPlayer(player)).orElse(false)) {
+            return;
+        }
+
         if (!isEligibleToShow(player)) {
             if (plugin.getNametagManager().isDebug()) {
                 plugin.getLogger()
@@ -420,6 +426,11 @@ public class PacketNameTag {
     }
 
     public void spawnForOwner() {
+        // Apollo (Lunar Client) owners must never receive TextDisplay-based nametags.
+        if (plugin.getHook(ApolloHook.class).map(h -> h.isApolloPlayer(owner)).orElse(false)) {
+            return;
+        }
+
         this.visible = true;
         final User ownerUser = PacketEvents.getAPI().getPlayerManager().getUser(owner);
         if (ownerUser == null) {
@@ -595,6 +606,11 @@ public class PacketNameTag {
     }
 
     public void spawn(@NotNull Player player) {
+        // Apollo (Lunar Client) viewers must never receive TextDisplay-based nametags.
+        if (plugin.getHook(ApolloHook.class).map(h -> h.isApolloPlayer(player)).orElse(false)) {
+            return;
+        }
+
         this.visible = true;
         final User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
         if (user == null) {

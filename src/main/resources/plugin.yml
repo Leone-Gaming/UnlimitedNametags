@@ -16,6 +16,8 @@ softdepend:
   - PlaceholderAPI
   - ProtocolLib
   - ProtocolSupport
+  - Apollo-Bukkit
+  - Apollo-Folia
   - ViaVersion
   - ViaBackwards
   - ViaRewind
